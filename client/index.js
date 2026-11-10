@@ -4,6 +4,8 @@
 window.__ModuleLoader__.load({
   id: "@jinshuxuan/dsh-memory",
   factory: (require) => {
+    // 宿主既可能用 factory 返回值，也可能读 module.exports；两边都写，避免导出为空导致面板静默消失。
+    const module = { exports: {} };
     const React = require("react");
     const h = React.createElement;
     const NS = "dsh-memory";
@@ -347,6 +349,7 @@ window.__ModuleLoader__.load({
       }, "dsh-memory-settings");
     }
 
-    return { inject: ["slots", "locale"], apply };
+    module.exports = { inject: ["slots", "locale"], apply };
+    return module.exports;
   },
 });
