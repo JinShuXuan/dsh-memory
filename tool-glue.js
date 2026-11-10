@@ -110,8 +110,9 @@ export async function mergeMemoryTools(api = {}) {
     log("tool-glue skill-drafts:", String(error?.message ?? error));
   }
 
+  let ledgerApi = null;
   try {
-    registerErrorLedger({
+    ledgerApi = registerErrorLedger({
       addTool: (def) => collected.push(def),
       db: api.db,
       addFact: typeof api.addFact === "function" ? api.addFact : undefined,
@@ -136,7 +137,7 @@ export async function mergeMemoryTools(api = {}) {
       }
     }
   }
-  return { registered, defs, collected: collected.map((def) => def.name) };
+  return { registered, defs, collected: collected.map((def) => def.name), error: ledgerApi };
 }
 
 export default mergeMemoryTools;

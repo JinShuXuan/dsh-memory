@@ -14,3 +14,4 @@ npm-debug.log*
 Thumbs.db
 .npm-cache/
 PLAN.md
+.tmp-test/

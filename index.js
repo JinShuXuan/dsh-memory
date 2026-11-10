@@ -312,6 +312,10 @@ function frontMatter(rec) {
     // 2026-11-11（C）：学习信号落 md，向量/回流计数丢了也能从真源回灌
     `used: ${Number(rec.used_count ?? rec.used ?? 0) || 0}`,
     `adopted: ${Number(rec.adopted ?? 0) ? 1 : 0}`,
+    // 2026-11-11（P1）：类型/阶段/教训摘要——按需出现，保持 md 干净
+    ...(rec.mtype ? [`type: ${q(rec.mtype)}`] : []),
+    ...(rec.stage && rec.stage !== "active" ? [`stage: ${q(rec.stage)}`] : []),
+    ...(rec.summary ? [`summary: ${q(rec.summary)}`] : []),
     `author: ${q(rec.author ?? "user")}`,
     `source_ref: ${q(rec.source_ref)}`,
     `superseded_by: ${q(rec.superseded_by)}`,
@@ -667,6 +671,10 @@ class MemoryStore {
       adopted: "INTEGER DEFAULT 0",
       // 2026-11-11（C2）：学习信号脏位——检索递增后等 flushUsage 统一回写 md
       usage_dirty: "INTEGER DEFAULT 0",
+      // 2026-11-11（P1）：记忆类型（facts 默认 / lesson / decision / node / archive）+ 草稿阶段 + 教训摘要
+      mtype: "TEXT",
+      stage: "TEXT NOT NULL DEFAULT 'active'",
+      summary: "TEXT",
     };
     const have = new Set(this.db.prepare("PRAGMA table_info(memory)").all().map((c) => c.name));
     for (const [name, type] of Object.entries(wanted)) {
@@ -791,10 +799,21 @@ class MemoryStore {
         const exists = this.db.prepare("SELECT * FROM memory WHERE id = ?").get(meta.id);
         if (exists) {
           const mdStatus = meta.status || "active";
-          if (exists.status !== mdStatus || exists.content_hash !== hash) {
+          const mdType = meta.type ?? null;
+          const mdStage = meta.stage || "active";
+          const mdSummary = meta.summary ?? null;
+          if (
+            exists.status !== mdStatus ||
+            exists.content_hash !== hash ||
+            (exists.mtype ?? null) !== mdType ||
+            (exists.stage || "active") !== mdStage ||
+            (exists.summary ?? null) !== mdSummary
+          ) {
             this.db
-              .prepare("UPDATE memory SET status = ?, value = ?, content_hash = ?, updated_at = ? WHERE id = ?")
-              .run(mdStatus, parsed.body, hash, Date.parse(meta.updated_at) || Date.now(), meta.id);
+              .prepare(
+                "UPDATE memory SET status = ?, value = ?, content_hash = ?, updated_at = ?, mtype = ?, stage = ?, summary = ? WHERE id = ?",
+              )
+              .run(mdStatus, parsed.body, hash, Date.parse(meta.updated_at) || Date.now(), mdType, mdStage, mdSummary, meta.id);
             this.reindexFts(meta.id, parsed.body, meta.subject, meta.predicate, meta.tags);
             updated += 1;
           }
@@ -819,6 +838,9 @@ class MemoryStore {
             content_hash: hash,
             used_count: Number(meta.used) || 0,
             adopted: Number(meta.adopted) ? 1 : 0,
+            mtype: meta.type ?? null,
+            stage: meta.stage || "active",
+            summary: meta.summary ?? null,
           });
           added += 1;
         } catch (error) {
@@ -902,8 +924,8 @@ class MemoryStore {
           `INSERT INTO memory (id, scope, subject, predicate, value, tags, status, confidence, source_type, source_ref, source_seq,
              created_at, updated_at, md_path, content_hash, layer, content, content_seg, trust, superseded_by, replaces,
              cluster_key, parent_scenario_id, node_ids, vec_state, deleted_at, expires_at, access_count, author,
-             used_count, adopted)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             used_count, adopted, mtype, stage, summary)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           rec.id,
@@ -937,6 +959,9 @@ class MemoryStore {
           rec.author ?? "user",
           rec.used_count ?? (Number(rec.used) || 0),
           rec.adopted ? 1 : 0,
+          rec.mtype ?? null,
+          rec.stage ?? "active",
+          rec.summary ?? null,
         );
       if (this.fts) this.ftsPut(rec.id, seg, ftsRawOf(rec));
       this.db.exec("COMMIT");
@@ -1060,6 +1085,10 @@ class MemoryStore {
       author: candidate.author === "assistant" ? "assistant" : "user",
       source_ref: candidate.source_ref ?? null,
       source_seq: candidate.source_seq ?? 1,
+      // 2026-11-11（P1）：类型/阶段/摘要在写入口进库；二进制不动，md 按需出现
+      mtype: candidate.mtype ?? null,
+      stage: candidate.stage ?? "active",
+      summary: candidate.summary ?? null,
     };
 
     // 2026-11-10 语义判重：调用方先用 findSameFact() 找到「同一件事」的旧条传进来；
@@ -1143,6 +1172,10 @@ class MemoryStore {
       layer: "atomic",
       cluster_key: cand.subject ? hash16(cand.subject) : null,
       content_hash: hash16(cand.value),
+      // 2026-11-11（P1）：类型/摘要/阶段跟着写入，md 与库同一份真源
+      mtype: cand.mtype ?? null,
+      summary: cand.summary ?? null,
+      stage: cand.stage || "active",
     };
     rec.md_path = this.writeMarkdown(rec);
     try {
@@ -1446,17 +1479,23 @@ class MemoryStore {
     return made;
   }
 
-  store({ value, subject, predicate, tags, scope, sourceType, source_type, sourceRef, source_ref, sourceSeq, source_seq, confidence, sameFact = null }) {
+  store({ value, subject, predicate, tags, scope, sourceType, source_type, sourceRef, source_ref, sourceSeq, source_seq, confidence, sameFact = null, mtype = null, type = null, summary = null, stage = null }) {
+    const srcType = source_type ?? sourceType ?? "explicit";
+    // 2026-11-11（P1）：自动/推断来源默认进草稿态（staged），显式来源直接 active；显式 stage 优先
+    const st = stage ?? (["auto", "inferred"].includes(String(srcType)) ? "staged" : "active");
     const r = this.resolveWrite({
       value,
       subject,
       predicate,
       tags: tags ?? [],
       scope,
-      source_type: source_type ?? sourceType ?? "explicit",
+      source_type: srcType,
       source_ref: source_ref ?? sourceRef ?? null,
       source_seq: source_seq ?? sourceSeq ?? 1,
       confidence: confidence ?? 0.95,
+      mtype: mtype ?? type ?? null,
+      summary: summary ?? null,
+      stage: String(st),
     }, sameFact);
     if (r.action === "denied") {
       return { ok: false, denied: true, code: r.code ?? "DENIED_SECRET", status: "denied" };
@@ -1633,7 +1672,41 @@ class MemoryStore {
    * 2026-11-11 起默认走加权融合（fusion.enabled）；fusion.enabled=false 时回到旧的 RRF 路径，
    * 两条路共用后面的 hydrate / 遗忘降权 / 切片，返回结构不变（score 语义变成最终打分）。
    */
-  async search(query, scope, limit) {
+  /**
+   * 2026-11-11（P1）：非 facts 模式的分发（facts 走原融合排序不动）。
+   * 有 query 时复用 FTS 命中再按类型过滤；空 query 走「最近 N 条」列表——省 token、省向量算力。
+   */
+  async modeSearch(mode, query, scope, limit) {
+    const max = Math.min(Math.max(Number(limit) || 6, 1), 50);
+    const list = (where, params = []) => {
+      const pre = scope ? "AND scope = ?" : "";
+      const p = scope ? [scope, ...params, max] : [...params, max];
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM memory WHERE deleted_at IS NULL ${pre} ${where ? `AND ${where}` : ""} ORDER BY created_at DESC LIMIT ?`,
+        )
+        .all(...p);
+      return rows.map((row) => this.hydrate(row.id, 1) ?? row);
+    };
+    if (mode === "timeline") return list("status = 'active'");
+    if (mode === "archive") return list("status = 'archived'");
+    if (mode === "staged") return list("stage = 'staged'");
+    const TYPES = { skill: ["skill", "lesson"], lesson: ["lesson"], decision: ["decision"], node: ["node"] };
+    const mtypes = TYPES[mode];
+    if (!mtypes) return this.search(query, scope, max);
+    const byType = (h) =>
+      mtypes.includes(String(h.mtype ?? "").toLowerCase()) ||
+      (Array.isArray(h.tags) ? h.tags : []).some((t) => mtypes.includes(String(t).toLowerCase().replace(/^type:/, "")));
+    if (query) {
+      const hits = await this.search(query, scope, Math.min(max * 3, 50));
+      return hits.filter(byType).slice(0, max);
+    }
+    return list(`mtype IN (${mtypes.map(() => "?").join(",")})`, mtypes);
+  }
+
+  async search(query, scope, limit, mode = "facts") {
+    const m = String(mode || "facts").toLowerCase();
+    if (m && m !== "facts") return this.modeSearch(m, String(query ?? ""), scope, limit);
     const max = Math.min(Math.max(Number(limit) || 6, 1), 50);
     const POOL = 50;
     const qTokens = tokenize(query);
@@ -1660,6 +1733,8 @@ class MemoryStore {
     base.forEach((r) => {
       const h = this.hydrate(r.id, r.rel);
       if (!h?.value) return;
+      // 2026-11-11（P1）：草稿态不进默认 facts 检索，只在 mode=staged 可见
+      if (h.stage === "staged") return;
       const act = decayOn ? this.activationById(r.id) : 1;
       let w = 0.4 + 0.6 * Math.min(act, 1);
       if (h.status === "archived") w *= Number(decayCfg.archivedFactor) || 0.5;
@@ -2725,7 +2800,7 @@ class MemoryStore {
   hydrate(id, score) {
     const row = this.db
       .prepare(
-        "SELECT id, scope, subject, predicate, value, tags, status, source_type, created_at, confidence, md_path, pinned, pin_source, layer, updated_at, used_count, adopted FROM memory WHERE id = ?",
+        "SELECT id, scope, subject, predicate, value, tags, status, source_type, created_at, confidence, md_path, pinned, pin_source, layer, updated_at, used_count, adopted, mtype, stage, summary, author FROM memory WHERE id = ?",
       )
       .get(id);
     if (!row) return { id, score: null };
@@ -2749,6 +2824,10 @@ class MemoryStore {
       md_path: row.md_path,
       used_count: Number(row.used_count ?? 0),
       adopted: Number(row.adopted ?? 0) ? 1 : 0,
+      // 2026-11-11（P1）：类型/阶段/摘要，供 mode 过滤与短卡展示
+      mtype: row.mtype ?? null,
+      stage: row.stage ?? "active",
+      summary: row.summary ?? null,
     };
   }
 
@@ -3254,6 +3333,7 @@ function applyInner(ctx) {
     };
     const textOutput = { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: String(v) }] };
     // ---- 错误台账 / skill 草稿：6 个细粒度工具折叠成 2 个（memory_error / memory_skill） ----
+    let ledgerApi = null;
     try {
       const glued = mergeMemoryTools({
         register,
@@ -3313,9 +3393,16 @@ function applyInner(ctx) {
         },
       });
       if (glued && typeof glued.then === "function") {
-        glued.then((out) => log("tool-glue 已注册:", (out?.registered ?? []).join(","))).catch((error) => {
-          log("tool-glue: " + String(error?.message ?? error));
-        });
+        glued
+          .then((out) => {
+            ledgerApi = out?.error ?? null;
+            log("tool-glue 已注册:", (out?.registered ?? []).join(","));
+          })
+          .catch((error) => {
+            log("tool-glue: " + String(error?.message ?? error));
+          });
+      } else if (glued) {
+        ledgerApi = glued.error ?? null;
       }
     } catch (error) {
       log("tool-glue: " + String(error?.message ?? error));
@@ -3412,14 +3499,18 @@ function applyInner(ctx) {
     register({
       name: "memory_search",
       description:
-        "在记忆库里检索，返回按相关性排序的短卡（id + 一句话 + 来源 + 时间）。需要原文时对 id 调 memory_get。中文用自然语句即可。",
+        "记忆检索。mode=facts(默认)/error(台账摘要)/skill/lesson/decision/node/timeline/archive/staged。只回短卡，原文调 memory_get。",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string", description: "检索词或一句话" },
           scope: { type: "string", description: "可选：global 或 ws-xxxxxxxx" },
           limit: { type: "string", description: "可选：返回条数，默认 6，最多 50" },
-          expand: { type: "string", description: "可选：传 true 时附带这些命中的一跳关联记忆（linked 字段）" },
+          expand: { type: "string", description: "可选：true 时附带一跳关联" },
+          mode: {
+            type: "string",
+            description: "facts(默认) | error(错误台账摘要) | skill/lesson/decision/node | timeline | archive | staged(草稿)",
+          },
         },
         required: ["query"],
       },
@@ -3428,9 +3519,18 @@ function applyInner(ctx) {
         try {
           const store = await ensureStore(config);
           const query = String(args.query ?? "").trim();
-          // 空查询不再「随便返回 6 条」：直接空结果，避免把无关记忆当资料喂给模型
-          if (!query) return JSON.stringify({ ok: true, count: 0, linked: [], items: [] });
-          const hits = await store.search(query, args.scope, Number(args.limit) || 6);
+          const mode = String(args.mode ?? "facts").toLowerCase();
+          // 2026-11-11（P1）：error 模式走台账 digest——默认只回 latest-1 条摘要 + 标题列表（极省 token）
+          if (mode === "error") {
+            const digest = ledgerApi?.digest?.(query, Math.min(Number(args.limit) || 1, 5));
+            if (!digest) return JSON.stringify({ ok: false, code: "LEDGER_UNAVAILABLE" });
+            log("台账摘要", { len: query.length, total: digest.total ?? 0 });
+            return JSON.stringify(digest);
+          }
+          // 空查询：facts 仍直接空结果；timeline/archive/staged 等列表模式允许空查询
+          const listMode = ["timeline", "archive", "staged"].includes(mode);
+          if (!query && !listMode) return JSON.stringify({ ok: true, count: 0, linked: [], items: [] });
+          const hits = await store.search(query, args.scope, Number(args.limit) || 6, mode);
           const expand = String(args.expand ?? "").toLowerCase() === "true";
           const linked = expand ? store.searchRelated(hits, 5) : [];
           // 2026-11-10：工具检索改为纯读（不再 touch）；只有真正注入或 memory_get 才计访问
@@ -3454,6 +3554,9 @@ function applyInner(ctx) {
               author: h.author ?? "user",
               created_at: h.created_at ? iso(h.created_at) : undefined,
               score: h.score,
+              ...(h.mtype ? { mtype: h.mtype } : {}),
+              ...(h.stage && h.stage !== "active" ? { stage: h.stage } : {}),
+              ...(h.summary ? { summary: String(h.summary).slice(0, 120) } : {}),
             })),
           });
         } catch (error) {

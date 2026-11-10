@@ -371,6 +371,47 @@ export function createErrorLedger(api = {}) {
   };
 
   /**
+   * 2026-11-11（P1 · 极省模式）：错误模式摘要 = 最近 1 条全文摘要 + 最多 5 条标题行。
+   * 用户选「台帐默认 latest-1 + 标题式列表」：一次回顾成本 ~300 字符，需要详情再 memory_get。
+   */
+  const digest = async (rawQuery = "", rawLimit = 1) => {
+    try {
+      const db = await dbOf();
+      const q = norm(rawQuery);
+      const keep = Math.max(1, Math.min(3, Number(rawLimit) || 1));
+      const total = Number(db.prepare(`SELECT COUNT(*) AS n FROM error_ledger WHERE ${LIVE}`).get()?.n ?? 0);
+      let rows = [];
+      if (q) {
+        const hit = await search(q, keep);
+        rows = (hit.rows ?? []).map((r) => r);
+      } else {
+        rows = await query(`SELECT * FROM error_ledger WHERE ${LIVE} ORDER BY ts DESC LIMIT ?`, [keep]);
+      }
+      const latest = rows.map((row) => {
+        const r = cleanRow(row);
+        return {
+          id: Number(r.id),
+          hits: Number(r.hits ?? 0),
+          cmd: clip(sanitize(r.cmd ?? ""), 120),
+          symptom: clip(sanitize(r.symptom ?? ""), 120),
+          root_cause: clip(sanitize(r.root_cause ?? ""), 160),
+          lesson: clip(sanitize(r.lesson ?? ""), 160),
+          where_solution: clip(sanitize(r.where_solution ?? ""), 120),
+        };
+      });
+      const titles = (
+        await query(
+          `SELECT id, cmd, symptom, hits FROM error_ledger WHERE ${LIVE} ORDER BY hits DESC, id DESC LIMIT 5`,
+        )
+      ).map((r) => `#${Number(r.id)}(×${Number(r.hits ?? 0)}) ${clip(sanitize(r.cmd || r.symptom || ""), 80)}`);
+      return { ok: true, total, latest, titles };
+    } catch (error) {
+      log("error-ledger digest failed:", String(error?.message ?? error));
+      return { ok: false, code: "DIGEST_FAILED", message: String(error?.message ?? error) };
+    }
+  };
+
+  /**
    * 台账管理：list / delete（软删 status=deleted）/ purge（硬删）/ export（JSONL）
    * 一律不抛：失败返回 { ok:false, code, message }
    */
@@ -432,7 +473,7 @@ export function createErrorLedger(api = {}) {
     }
   };
 
-  return { ensureTable: dbOf, report, search, writeback, summarizeErrors, resolveDb, admin };
+  return { ensureTable: dbOf, report, search, writeback, summarizeErrors, resolveDb, admin, digest };
 }
 
 const guard = (ledger, name, fn) => async (args = {}) => {
@@ -547,6 +588,7 @@ export default function registerErrorLedger(api = {}) {
     search: ledger.search,
     writeback: ledger.writeback,
     summarizeErrors: ledger.summarizeErrors,
+    digest: ledger.digest,
     ensureTable: ledger.ensureTable,
     admin: ledger.admin,
   };

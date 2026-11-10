@@ -294,6 +294,7 @@ await checkAsync("来源序：explicit 排 auto 前、inferred 排 auto 后", as
       tags: ["bench"],
       scope: "global",
       sourceType: tier,
+      stage: "active", // 排名测试要参与 facts 检索，显式置 active（auto/inferred 默认进 staged）
     });
     assert(r?.id, `store(${tier}) 失败：${JSON.stringify(r)}`);
     return r.id;
@@ -320,6 +321,7 @@ await checkAsync("renorm：语义缺席时 pinned 不能仅凭强度冲第一", 
       tags: ["bench"],
       scope: "global",
       sourceType: "inferred",
+      stage: "active",
     });
     const strong = t.store.store({
       value: "排名测试 排名测试 排名测试 排名测试 排名测试",
@@ -328,6 +330,7 @@ await checkAsync("renorm：语义缺席时 pinned 不能仅凭强度冲第一", 
       tags: ["bench"],
       scope: "global",
       sourceType: "auto",
+      stage: "active",
     });
     assert(weak?.id && strong?.id, `store 失败：${JSON.stringify({ weak, strong })}`);
     t.db.prepare("UPDATE memory SET pinned = 1 WHERE id = ?").run(weak.id);
