@@ -24,6 +24,7 @@ import { PaperStore } from "./papers.js";
 import { resolveRoot, modelDir, legacyRoots, migrateLegacy, verifyMigration } from "./src/paths.js";
 import { DEFAULTS, configPath, loadConfig as readConfig, saveConfig, resolveApiKey, maskKey } from "./src/config.js";
 import { ensureModel } from "./src/model.js";
+import { mergeMemoryTools } from "./tool-glue.js";
 
 export const name = "@jinshuxuan/dsh-memory";
 export const inject = [];
@@ -236,6 +237,51 @@ function segmentOf(rec) {
   return tokenize([rec.value, rec.subject, rec.predicate, (rec.tags ?? []).join(" ")].filter(Boolean).join(" ")).join(
     " ",
   );
+}
+
+/** 2026-11-11：FTS 的第二列存原句（未分词），用于精确短语命中 */
+function ftsRawOf(rec) {
+  return [rec.value, rec.subject, rec.predicate, (rec.tags ?? []).join(" ")].filter(Boolean).join(" ").slice(0, 2000);
+}
+
+/** 2026-11-11：从 memory.tags 还原标签数组——库里存的是 JSON 字符串，别按逗号裸切 */
+function tagsOf(row) {
+  const raw = row?.tags;
+  if (Array.isArray(raw)) return raw.map(String);
+  const s = String(raw ?? "").trim();
+  if (!s) return [];
+  if (s.startsWith("[")) {
+    try {
+      const v = JSON.parse(s);
+      return Array.isArray(v) ? v.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+  return s.split(/[,\s]+/).filter(Boolean);
+}
+
+/**
+ * 2026-11-11：一路检索结果的分数 min-max 归一 → Map(id → [0,1])。
+ * lowerBetter 用于 bm25（SQLite 里越负越相关）。分数缺失/不可比时退回名次分，保证不抛错。
+ */
+function normScores(list, lowerBetter) {
+  const out = new Map();
+  if (!Array.isArray(list) || list.length === 0) return out;
+  const vals = list.map((r) => Number(r.score)).filter((n) => Number.isFinite(n));
+  if (vals.length === 0) {
+    list.forEach((r, i) => out.set(r.id, 1 - i / Math.max(list.length, 1)));
+    return out;
+  }
+  const lo = Math.min(...vals);
+  const hi = Math.max(...vals);
+  for (const r of list) {
+    const s = Number(r.score);
+    if (!Number.isFinite(s)) out.set(r.id, 0);
+    else if (hi === lo) out.set(r.id, 1);
+    else out.set(r.id, lowerBetter ? (hi - s) / (hi - lo) : (s - lo) / (hi - lo));
+  }
+  return out;
 }
 
 // ---------------- markdown 真源 ----------------
@@ -624,14 +670,23 @@ class MemoryStore {
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS ix_ep_pending ON episode(extract_state)");
     this.db.exec("CREATE INDEX IF NOT EXISTS ix_mem_layer ON memory(scope, layer, status)");
-    try {
-      this.db.exec(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(memory_id UNINDEXED, seg, tokenize='unicode61 tokenchars ''-_.+''')",
-      );
-      this.fts = true;
-    } catch (error) {
+    // 2026-11-11：fts.enabled=false 完全不建表，检索回退 overlapTop（LIKE）
+    const ftsCfg = loadConfig()?.fts ?? {};
+    if (ftsCfg.enabled === false) {
       this.fts = false;
-      log("FTS5 不可用：", String(error?.message ?? error));
+      log("fts.enabled=false，跳过建表，检索走 LIKE 兜底");
+    } else {
+      try {
+        this.db.exec(
+          "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(memory_id UNINDEXED, seg, raw, tokenize='unicode61 tokenchars ''-_.+''')",
+        );
+        this.fts = true;
+      } catch (error) {
+        this.fts = false;
+        log("FTS5 不可用：", String(error?.message ?? error));
+      }
+      // 旧库是单列 seg：双列要重建表（FTS5 不能 ALTER 加列），失败保留旧表
+      if (this.fts && ftsCfg.dualColumn !== false) this.upgradeFtsDualColumn();
     }
     try {
       this.db.exec(
@@ -646,6 +701,43 @@ class MemoryStore {
     if (!row) {
       this.db.prepare("INSERT INTO meta (k, v) VALUES ('schema', '1')").run();
       this.db.prepare("INSERT INTO meta (k, v) VALUES ('fts', ?)").run(this.fts ? "1" : "0");
+    }
+  }
+
+  /**
+   * 2026-11-11：单列 memory_fts(seg) → 双列 (seg, raw)。
+   * FTS5 不支持按列 ALTER，只能建 v2 → 回填 → drop → rename；全程事务，失败保留旧表并记日志。
+   */
+  upgradeFtsDualColumn() {
+    try {
+      const cols = this.db.prepare("PRAGMA table_info(memory_fts)").all().map((c) => c.name);
+      if (cols.includes("raw")) return true;
+      this.db.exec("BEGIN IMMEDIATE");
+      this.db.exec(
+        "CREATE VIRTUAL TABLE memory_fts_v2 USING fts5(memory_id UNINDEXED, seg, raw, tokenize='unicode61 tokenchars ''-_.+''')",
+      );
+      const rows = this.db
+        .prepare("SELECT id, value, subject, predicate, tags, content_seg FROM memory")
+        .all();
+      const ins = this.db.prepare("INSERT INTO memory_fts_v2 (memory_id, seg, raw) VALUES (?, ?, ?)");
+      for (const row of rows) {
+        const rec = { value: row.value, subject: row.subject, predicate: row.predicate, tags: tagsOf(row) };
+        ins.run(row.id, row.content_seg || segmentOf(rec), ftsRawOf(rec));
+      }
+      this.db.exec("DROP TABLE memory_fts");
+      this.db.exec("ALTER TABLE memory_fts_v2 RENAME TO memory_fts");
+      this.db.exec("COMMIT");
+      log("FTS 双列升级完成，回填", rows.length);
+      return true;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      try {
+        this.db.exec("DROP TABLE IF EXISTS memory_fts_v2");
+      } catch {}
+      log("FTS 双列升级失败，保留单列：", String(error?.message ?? error));
+      return false;
     }
   }
 
@@ -769,9 +861,7 @@ class MemoryStore {
           rec.access_count ?? 0,
           rec.author ?? "user",
         );
-      if (this.fts) {
-        this.db.prepare("INSERT INTO memory_fts (memory_id, seg) VALUES (?, ?)").run(rec.id, seg);
-      }
+      if (this.fts) this.ftsPut(rec.id, seg, ftsRawOf(rec));
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -782,9 +872,25 @@ class MemoryStore {
   reindexFts(id, value, subject, predicate, tags) {
     if (!this.fts) return;
     this.db.prepare("DELETE FROM memory_fts WHERE memory_id = ?").run(id);
-    this.db
-      .prepare("INSERT INTO memory_fts (memory_id, seg) VALUES (?, ?)")
-      .run(id, segmentOf({ value, subject, predicate, tags: tags ?? [] }));
+    const rec = { value, subject, predicate, tags: tags ?? [] };
+    this.ftsPut(id, segmentOf(rec), ftsRawOf(rec));
+  }
+
+  /**
+   * 2026-11-11：写一行 FTS。优先写 (seg, raw) 双列；若表还是单列（升级失败/降级），自动退回单列写，
+   * 不让整条记忆因为 FTS 写失败而丢失。
+   */
+  ftsPut(id, seg, raw) {
+    if (!this.fts) return;
+    try {
+      this.db.prepare("INSERT INTO memory_fts (memory_id, seg, raw) VALUES (?, ?, ?)").run(id, seg, raw ?? "");
+    } catch (error) {
+      try {
+        this.db.prepare("INSERT INTO memory_fts (memory_id, seg) VALUES (?, ?)").run(id, seg);
+      } catch (error2) {
+        log("FTS 写入失败：", String(error2?.message ?? error2));
+      }
+    }
   }
 
   writeMarkdown(rec) {
@@ -1445,24 +1551,37 @@ class MemoryStore {
     return rows.length;
   }
 
-  /** 混合检索：BM25 路 ∪ 向量路 → RRF 融合。任一路不可用就退化成另一路。 */
+  /**
+   * 混合检索：BM25 路 ∪ 向量路。
+   * 2026-11-11 起默认走加权融合（fusion.enabled）；fusion.enabled=false 时回到旧的 RRF 路径，
+   * 两条路共用后面的 hydrate / 遗忘降权 / 切片，返回结构不变（score 语义变成最终打分）。
+   */
   async search(query, scope, limit) {
     const max = Math.min(Math.max(Number(limit) || 6, 1), 50);
     const POOL = 50;
     const qTokens = tokenize(query);
-    const lexical = this.fts ? this.lexicalTop(qTokens, scope, POOL) : this.overlapTop(qTokens, scope, POOL);
+    const lexical = this.fts ? this.lexicalTop(qTokens, scope, POOL, query) : this.overlapTop(qTokens, scope, POOL);
     const semantic = await this.vectorTop(query, scope, POOL);
     const lists = [lexical, semantic].filter((l) => l.length > 0);
     if (lists.length === 0) return [];
-    // 2026-11-10 遗忘降权：先融合（顺序即相关度序），再按激活分打折重排。
-    // 用「排名」而不是 score 参与计算——lexical 的 bm25 与 rrf 分数符号方向不同，直接乘会翻向。
-    const fused = lists.length === 1 ? lists[0] : rrf(lists, 60);
-    const decayCfg = loadConfig().decay ?? {};
+    const cfg = loadConfig();
+    const fusionCfg = cfg.fusion ?? {};
+    let base;
+    if (fusionCfg.enabled !== false) {
+      base = this.fusionRank(lexical, semantic, fusionCfg);
+    } else {
+      // 2026-11-10 旧路径：用「排名」融合——lexical 的 bm25 与 rrf 分数符号方向不同，直接乘会翻向。
+      const fused = lists.length === 1 ? lists[0] : rrf(lists, 60);
+      base = fused.map((r, idx) => ({ id: r.id, rel: 1 / (idx + 1) }));
+    }
+    if (base.length === 0) return [];
+    // 2026-11-10 遗忘降权：融合分（或 RRF 名次分）作相关度，再按激活分打折重排。
+    const decayCfg = cfg.decay ?? {};
     const decayOn = decayCfg.enabled !== false;
-    const abstractCfg = loadConfig().abstract ?? {};
+    const abstractCfg = cfg.abstract ?? {};
     const ranked = [];
-    fused.forEach((r, idx) => {
-      const h = this.hydrate(r.id, r.score);
+    base.forEach((r) => {
+      const h = this.hydrate(r.id, r.rel);
       if (!h?.value) return;
       const act = decayOn ? this.activationById(r.id) : 1;
       let w = 0.4 + 0.6 * Math.min(act, 1);
@@ -1476,11 +1595,49 @@ class MemoryStore {
         activation: Number(act.toFixed(2)),
         decay_weight: Number(w.toFixed(2)),
         stale: isCore ? stale : undefined,
-        _final: (1 / (idx + 1)) * w,
+        _final: r.rel * w,
       });
     });
-    ranked.sort((a, b) => b._final - a._final);
+    // 同分按创建时间新的在前（fusion 下同分很常见，靠稳定排序避免抖动）
+    ranked.sort((a, b) => b._final - a._final || String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
     return ranked.slice(0, max).map(({ _final, ...h }) => h);
+  }
+
+  /**
+   * 2026-11-11：加权融合。score = wBm25*bm25_norm + wVec*cos_norm + wStrength*strength，三者都归一到 [0,1]。
+   * bm25 只对 lexical 池做 min-max（越负越好），cos 用 (cos+1)/2 直接映射；只在一路出现的候选另一路补 0。
+   */
+  fusionRank(lexical, semantic, cfg) {
+    const wB = Number(cfg.wBm25 ?? 0.45);
+    const wV = Number(cfg.wVec ?? 0.35);
+    const wS = Number(cfg.wStrength ?? 0.2);
+    const bm = normScores(lexical, true);
+    const vc = normScores(semantic, false);
+    const ids = new Set([...bm.keys(), ...vc.keys()]);
+    const out = [];
+    for (const id of ids) {
+      const b = bm.get(id) ?? 0;
+      const v = vc.get(id) ?? 0;
+      const s = this.strengthOf(id);
+      out.push({ id, rel: Math.max(0, wB * b + wV * v + wS * s) });
+    }
+    out.sort((a, b) => b.rel - a.rel);
+    return out;
+  }
+
+  /**
+   * strength ∈ [0,1]：activation 归一（值域约 [0.55,1.2]）后 **加性** 叠 pin / 显式来源奖励。
+   * 用加法不用乘法：乘法会让 pinned 条目永久霸榜；这里 pin 最多加 0.3，0.2 权重下只值 0.06。
+   */
+  strengthOf(id) {
+    try {
+      const act = this.activationById(id) / 1.2;
+      const row = this.db.prepare("SELECT pinned, source_type FROM memory WHERE id = ?").get(id);
+      const bonus = (row?.pinned ? 0.3 : 0) + (row?.source_type === "user_explicit" ? 0.1 : 0);
+      return Math.min(1, Math.max(0, act) + bonus);
+    } catch {
+      return 0;
+    }
   }
 
   // ---------- 关联图（2026-11-10）：命中一条时带出一跳邻居 ----------
@@ -2312,9 +2469,14 @@ class MemoryStore {
     };
   }
 
-  lexicalTop(qTokens, scope, limit) {
+  lexicalTop(qTokens, scope, limit, phrase) {
     if (qTokens.length === 0) return [];
-    const match = qTokens.map((t) => `"${t}"`).join(" OR ");
+    let match = qTokens.map((t) => `"${t}"`).join(" OR ");
+    // 2026-11-11：短整句额外作为一个短语 OR 进来（"农历三月初三" 这类连续命中排更前）。
+    // 含引号/太长/与词项串相同就跳过；短语哪怕语法不合法也只是整句失败 → catch 后返回 []，
+    // 所以这里再兜一层：短语子句失败时用纯词项重试一次。
+    const ph = String(phrase ?? "").replace(/["']/g, " ").trim();
+    const withPhrase = ph && ph.length <= 24 ? `${match} OR "${ph}"` : null;
     const sql = scope
       ? `SELECT memory_fts.memory_id AS id, bm25(memory_fts) AS score
            FROM memory_fts JOIN memory ON memory.id = memory_fts.memory_id
@@ -2325,6 +2487,15 @@ class MemoryStore {
           WHERE memory_fts MATCH ? AND memory.status IN ('active','archived') AND deleted_at IS NULL
           ORDER BY score LIMIT ?`;
     try {
+      if (withPhrase) {
+        try {
+          return scope
+            ? this.db.prepare(sql).all(withPhrase, scope, limit)
+            : this.db.prepare(sql).all(withPhrase, limit);
+        } catch (phraseError) {
+          log("FTS 短语子句失败，退回词项：", String(phraseError?.message ?? phraseError));
+        }
+      }
       return scope ? this.db.prepare(sql).all(match, scope, limit) : this.db.prepare(sql).all(match, limit);
     } catch (error) {
       log("FTS 查询失败：", String(error?.message ?? error));
@@ -2482,6 +2653,164 @@ class MemoryStore {
       vec: this.vec.size,
       embedder: this.embedder ? this.embedder.stats() : null,
     };
+  }
+
+  /**
+   * 2026-11-11：索引体检（A3）。只发 SQL / PRAGMA / 目录列表，不建表、不写库，
+   * 因此只读连接也能跑；FTS 表不存在时不报错，只把 fts 记为 false 并跳过相关对账。
+   */
+  indexStats() {
+    const cnt = (sql) => {
+      try {
+        return Number(this.db.prepare(sql).get()?.n ?? 0);
+      } catch {
+        return 0;
+      }
+    };
+    const hasFts = (() => {
+      try {
+        return !!this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_fts'").get();
+      } catch {
+        return false;
+      }
+    })();
+    const memory = cnt("SELECT COUNT(*) AS n FROM memory WHERE deleted_at IS NULL");
+    const active = this.activeCount();
+    const fts = hasFts ? cnt("SELECT COUNT(*) AS n FROM memory_fts") : 0;
+    const vec = cnt("SELECT COUNT(*) AS n FROM memory_vec");
+    const rows = {
+      memory,
+      active,
+      fts,
+      ftsMissing: hasFts
+        ? cnt("SELECT COUNT(*) AS n FROM memory m WHERE m.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM memory_fts f WHERE f.memory_id = m.id)")
+        : 0,
+      vec,
+      vecMissing: cnt(
+        "SELECT COUNT(*) AS n FROM memory m WHERE m.status = 'active' AND m.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM memory_vec v WHERE v.id = m.id)",
+      ),
+      vecPending: cnt("SELECT COUNT(*) AS n FROM memory WHERE status = 'active' AND deleted_at IS NULL AND vec_state = 'pending'"),
+      links: cnt("SELECT COUNT(*) AS n FROM memory_link"),
+    };
+    const orphans = {
+      ftsWithoutMemory: hasFts
+        ? cnt("SELECT COUNT(*) AS n FROM memory_fts f WHERE NOT EXISTS (SELECT 1 FROM memory m WHERE m.id = f.memory_id)")
+        : 0,
+      memoryWithoutFts: hasFts ? rows.ftsMissing : 0,
+      vecWithoutMemory: cnt("SELECT COUNT(*) AS n FROM memory_vec v WHERE NOT EXISTS (SELECT 1 FROM memory m WHERE m.id = v.id)"),
+      ftsDuplicates: hasFts
+        ? cnt("SELECT COUNT(*) AS n FROM (SELECT memory_id FROM memory_fts GROUP BY memory_id HAVING COUNT(*) > 1)")
+        : 0,
+    };
+    // md 是真源：facts 目录里的文件数 vs 索引里挂了 md_path 的行数，少文件就是丢了真源
+    let mdFiles = 0;
+    for (const [, dir] of this.factDirs()) {
+      try {
+        mdFiles += readdirSync(dir).filter((f) => f.endsWith(".md") && !f.startsWith(".")).length;
+      } catch {
+        /* 目录不存在就当 0 */
+      }
+    }
+    const mdRows = cnt("SELECT COUNT(*) AS n FROM memory WHERE deleted_at IS NULL AND md_path IS NOT NULL");
+    orphans.mdMissing = Math.max(0, mdFiles - mdRows);
+    const ratio = (ok, total) => (total > 0 ? Number((ok / total).toFixed(3)) : 1);
+    return {
+      ok: true,
+      ftsTable: hasFts,
+      rows,
+      orphans,
+      coverage: {
+        fts: hasFts ? ratio(memory - rows.ftsMissing, memory) : 0,
+        vec: ratio(active - rows.vecMissing, active),
+      },
+      markdown: { files: mdFiles, rows: mdRows },
+      healthy:
+        hasFts &&
+        rows.ftsMissing === 0 &&
+        orphans.ftsWithoutMemory === 0 &&
+        orphans.ftsDuplicates === 0 &&
+        orphans.vecWithoutMemory === 0 &&
+        rows.vecPending === 0,
+    };
+  }
+
+  /** 2026-11-11：全量重建 FTS（幂等，事务内）。fts.enabled=false 时抛 FTS_DISABLED，由工具层转错误码。 */
+  rebuildFts() {
+    if (!this.fts) {
+      const error = new Error("fts.enabled=false，FTS 已关闭；先改 config.json 再重建");
+      error.code = "FTS_DISABLED";
+      throw error;
+    }
+    const rows = this.db
+      .prepare("SELECT id, value, subject, predicate, tags, content_seg FROM memory WHERE deleted_at IS NULL")
+      .all();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare("DELETE FROM memory_fts").run();
+      for (const row of rows) {
+        const rec = { value: row.value, subject: row.subject, predicate: row.predicate, tags: tagsOf(row) };
+        this.ftsPut(row.id, row.content_seg || segmentOf(rec), ftsRawOf(rec));
+      }
+      // ftsPut 内部吞错（避免拖垮外层事务），这里补一次行数核对：少行就回滚而不是假装成功
+      const n = Number(this.db.prepare("SELECT COUNT(*) AS n FROM memory_fts").get()?.n ?? 0);
+      if (n !== rows.length) throw new Error(`FTS 重建行数不符：${n} != ${rows.length}`);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      throw error;
+    }
+    log("FTS 全量重建：", rows.length);
+    return { rebuilt: rows.length };
+  }
+
+  /**
+   * 2026-11-11：subject 归一（A5）。只改别名表里的旧写法（用户→user、dsh_memory→dsh），
+   * 其余 subject 一律不碰；dry-run 只出清单不写库，apply 同步 FTS 与 md（md 是真源）。
+   */
+  normalizeSubjects({ dryRun = true } = {}) {
+    const ALIASES = { 用户: "user", dsh_memory: "dsh" };
+    let rows = [];
+    try {
+      rows = this.db
+        .prepare("SELECT id, subject, value, predicate, tags, md_path FROM memory WHERE deleted_at IS NULL AND subject IS NOT NULL")
+        .all();
+    } catch (error) {
+      log("subject 归一读取失败：", String(error?.message ?? error));
+      return { ok: false, code: "NORMALIZE_FAILED", message: String(error?.message ?? error) };
+    }
+    const changes = [];
+    for (const row of rows) {
+      const alias = ALIASES[String(row.subject)];
+      if (alias === undefined) continue;
+      const to = canonSubject(alias) || alias;
+      if (to === row.subject) continue;
+      changes.push({ id: row.id, from: row.subject, to, value: String(row.value).slice(0, 60) });
+    }
+    if (dryRun) return { ok: true, dryRun: true, count: changes.length, changes };
+    let updated = 0;
+    const failed = [];
+    const now = Date.now();
+    for (const c of changes) {
+      try {
+        this.db.prepare("UPDATE memory SET subject = ?, updated_at = ? WHERE id = ?").run(c.to, now, c.id);
+        const src = rows.find((r) => r.id === c.id);
+        this.reindexFts(c.id, src?.value, c.to, src?.predicate, tagsOf(src));
+        // md 是真源：索引改完必须把 md 一起改掉，否则下次对账会被 md 拉回旧 subject
+        try {
+          const rec = this.get(c.id);
+          if (rec) this.writeMarkdown(rec);
+        } catch (mdError) {
+          log("subject 归一的 md 同步失败：", c.id, String(mdError?.message ?? mdError));
+        }
+        updated += 1;
+      } catch (error) {
+        failed.push({ id: c.id, message: String(error?.message ?? error) });
+      }
+    }
+    log("subject 归一：", { updated, failed: failed.length });
+    return { ok: true, dryRun: false, count: changes.length, updated, failed, changes };
   }
 
   markInjected(session, turn) {
@@ -2787,6 +3116,73 @@ function applyInner(ctx) {
       }
     };
     const textOutput = { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: String(v) }] };
+    // ---- 错误台账 / skill 草稿：6 个细粒度工具折叠成 2 个（memory_error / memory_skill） ----
+    try {
+      const glued = mergeMemoryTools({
+        register,
+        root: ROOT,
+        log,
+        db: () => ensureStore(config),
+        addFact: async (input) => {
+          try {
+            const store = await ensureStore(config);
+            const tags = Array.isArray(input?.tags)
+              ? input.tags
+              : String(input?.tags ?? "")
+                  .split(",")
+                  .map((t) => t.trim())
+                  .filter(Boolean);
+            const result = store.store({
+              value: String(input?.value ?? "").trim(),
+              subject: input?.subject,
+              predicate: input?.predicate,
+              tags,
+              scope: input?.scope,
+              sourceType: "user_explicit",
+              sourceRef: input?.source_ref,
+            });
+            if (result?.denied || result?.rejected) {
+              return { ok: false, code: result.code ?? "REJECTED", message: "" };
+            }
+            return { ok: true, id: result?.id };
+          } catch (error) {
+            log("tool-glue addFact:", String(error?.message ?? error));
+            return { ok: false, code: "ADD_FACT_FAILED" };
+          }
+        },
+        listFacts: async ({ subject, limit } = {}) => {
+          const store = await ensureStore(config);
+          const n = Math.min(50, Math.max(1, Number(limit) || 50));
+          const rows = subject
+            ? store.db
+                .prepare(
+                  "SELECT id, subject, predicate, value, tags FROM memory WHERE status = 'active' AND subject = ? ORDER BY updated_at DESC LIMIT ?",
+                )
+                .all(subject, n)
+            : store.db
+                .prepare(
+                  "SELECT id, subject, predicate, value, tags FROM memory WHERE status = 'active' ORDER BY updated_at DESC LIMIT ?",
+                )
+                .all(n);
+          return rows.map((row) => {
+            let tags = [];
+            try {
+              tags = JSON.parse(row.tags ?? "[]");
+            } catch {
+              tags = [];
+            }
+            return { ...row, tags };
+          });
+        },
+      });
+      if (glued && typeof glued.then === "function") {
+        glued.then((out) => log("tool-glue 已注册:", (out?.registered ?? []).join(","))).catch((error) => {
+          log("tool-glue: " + String(error?.message ?? error));
+        });
+      }
+    } catch (error) {
+      log("tool-glue: " + String(error?.message ?? error));
+    }
     // 2026-11-10 工具合并：先把低频工具「收集」起来，最后按「一个工具多动作」分组合并注册，
     // 把常驻 tools schema 从 19 个降到 8 个，省约 3.7K token/请求。行为与原来逐 action 一致。
     const collected = new Map();
@@ -3071,7 +3467,9 @@ function applyInner(ctx) {
           const store = await ensureStore(config);
           const hit = store.get(String(args.id ?? ""));
           if (!hit) return JSON.stringify({ ok: false, code: "NOT_FOUND", message: `no memory matches ${args.id}` });
-          store.touch(hit.id, 1); // 取原文 = 真的用到了，回流加分
+          // 取原文 = 真的用到了，回流加分；受 recallWriteback 开关约束（关掉即完全只读）
+          const rb = loadConfig().recallWriteback ?? {};
+          if (rb.enabled !== false) store.touch(hit.id, Number(rb.weight) || 0.5);
           const truncated = typeof hit.content === "string" && hit.content.length > 2000;
           const content = truncated ? `${hit.content.slice(0, 2000)}\n…（已截断，还要更早的内容请直接读 md_path）` : hit.content;
           return JSON.stringify({ ok: true, ...hit, content, truncated, created_at: iso(hit.created_at) });
@@ -3331,6 +3729,13 @@ function applyInner(ctx) {
           })();
           const rows = store.stats();
           const failed = store.db.prepare("SELECT COUNT(*) AS n FROM episode WHERE extract_state = 'failed'").get().n;
+          // 2026-11-11：顺带给出索引覆盖/孤儿摘要，一眼能看出 FTS/向量与主表是否对得上
+          let index = null;
+          try {
+            index = store.indexStats();
+          } catch (error) {
+            log("indexStats 失败：", String(error?.message ?? error));
+          }
           const out = {
             ok: true,
             gate: loadConfig().gate,
@@ -3339,6 +3744,7 @@ function applyInner(ctx) {
             rows: { total: rows.total, active: rows.active, vectors: rows.vec },
             markdown: { files: md.checked, added: md.added, updated: md.updated },
             queues: { pending_review: store.listPending(100).length, extract_failed: Number(failed) },
+            index,
             paths: { root: store.base, db: join(store.base, "index", "memory.db"), log: LOG_FILE },
           };
           return JSON.stringify(out);
@@ -3458,11 +3864,11 @@ function applyInner(ctx) {
     collect({
       name: "memory_reindex",
       description:
-        "维护命令：mode=vec 补算缺失向量，link 重建关联图，archive 归档 180 天未用且未 pin 的记忆，tombstone 清理到期的墓碑文件，all 依次执行。",
+        "维护命令：mode=vec 补算缺失向量，fts 全量重建全文索引，link 重建关联图，archive 归档 180 天未用且未 pin 的记忆，tombstone 清理到期的墓碑文件，all 依次执行。",
       parameters: {
         type: "object",
         properties: {
-          mode: { type: "string", description: "vec | link | archive | tombstone | all，默认 all" },
+          mode: { type: "string", description: "vec | fts | link | archive | tombstone | all，默认 all" },
         },
         required: [],
       },
@@ -3472,6 +3878,15 @@ function applyInner(ctx) {
           const store = await ensureStore(config);
           const mode = String(args.mode ?? "all");
           const out = { ok: true, mode };
+          if (mode === "fts" || mode === "all") {
+            // 2026-11-11：fts.enabled=false 是明确配置而不是故障，按错误码报给调用方，不抛
+            try {
+              out.fts = store.rebuildFts();
+            } catch (ftsError) {
+              if (ftsError?.code === "FTS_DISABLED") out.fts = { ok: false, code: "FTS_DISABLED" };
+              else throw ftsError;
+            }
+          }
           if (mode === "vec" || mode === "all") out.vectors = await store.reembedAll();
           // 关联图放在向量之后：similar 边要用刚补齐的向量
           if (mode === "link" || mode === "all") out.links = store.backfillLinks();
@@ -3528,8 +3943,8 @@ function applyInner(ctx) {
       parameters: {
         type: "object",
         properties: {
-          action: { type: "string", description: "stats | health | journal | decay-dry | decay-apply | rebuild | extract | replay" },
-          mode: { type: "string", description: "rebuild 用：vec | link | decay | archive | tombstone | all" },
+          action: { type: "string", description: "stats | health | index-stats | subject-normalize | journal | decay-dry | decay-apply | rebuild | extract | replay" },
+          mode: { type: "string", description: "rebuild 用：vec | fts | link | decay | archive | tombstone | all；subject-normalize 用：dry-run（默认）| apply" },
           replay_mode: { type: "string", description: "replay 用：dry-run（默认，只列候选）| run" },
           days: { type: "string", description: "journal 用：看最近几天，默认 1" },
         },
@@ -3542,6 +3957,12 @@ function applyInner(ctx) {
         const store = await ensureStore(config);
         if (a === "stats") return callCollected("memory_stats", args, exec);
         if (a === "health") return callCollected("memory_health", args, exec);
+        // 2026-11-11 索引地基：只读体检 + subject 归一（默认 dry-run，mode=apply 才写）
+        if (a === "index-stats") return JSON.stringify(store.indexStats());
+        if (a === "subject-normalize") {
+          const dry = String(args.mode ?? "dry-run").toLowerCase() !== "apply";
+          return JSON.stringify(store.normalizeSubjects({ dryRun: dry }));
+        }
         if (a === "decay-dry") return callCollected("memory_decay", args, exec, { action: "dry-run" });
         if (a === "decay-apply") return callCollected("memory_decay", args, exec, { action: "apply" });
         if (a === "rebuild") return callCollected("memory_reindex", args, exec, { mode: args.mode ?? "all" });
@@ -3554,7 +3975,7 @@ function applyInner(ctx) {
         return JSON.stringify({
           ok: false,
           code: "BAD_ARGS",
-          message: "action 必须是 stats / health / decay-dry / decay-apply / rebuild / extract",
+          message: "action 必须是 stats / health / index-stats / subject-normalize / decay-dry / decay-apply / rebuild / extract / journal / replay",
         });
       },
     });
@@ -3730,9 +4151,14 @@ function applyInner(ctx) {
         lastQuery.set(sessionId, query);
         store.markInjected(sessionId, turn);
         const related = store.searchRelated(hits, Math.max(Number(cfg.link?.expandTop) || 2, 0));
-        // 2026-11-10 回流：注入进上下文的才算「用过」，关联项按 0.3 弱计
-        store.touch(hits.slice(0, 3).map((h) => h.id));
-        if (related.length > 0) store.touch(related.map((r) => r.id), 0.3);
+        // 2026-11-11 回流开关（recallWriteback）：只有真正注入提示词才算「用过」。
+        // 纯 search 保持只读（尊重 2026-11-10 的决定）；每次注入最多一次 touch：top 条、weight 0.5，
+        // 节流沿用 touchSeen 的 60s。—— 原先对 related 的 0.3 弱计合并掉，避免第二次写。
+        const rb = loadConfig().recallWriteback ?? {};
+        if (rb.enabled !== false) {
+          const top = Math.max(1, Number(rb.top) || 3);
+          store.touch(hits.slice(0, top).map((h) => h.id), Number(rb.weight) || 0.5);
+        }
         const text = formatHits(hits, cfg, related);
         log("注入中", { turn, chars: text.length });
         return {

@@ -61,6 +61,11 @@ export const DEFAULTS = {
   },
   replay: { enabled: true, auto: false, maxAttempts: 3, settleAfter: 2, perRun: 20, maxCalls: 5 },
   budget: { monthlyYuan: 20, costPerCallYuan: 0.005 },
+  // 2026-11-11 索引地基：两者任一置 false 即回到旧行为（LIKE 兜底 / RRF 排序）
+  fts: { enabled: true, dualColumn: true },
+  fusion: { enabled: true, wBm25: 0.45, wVec: 0.35, wStrength: 0.2 },
+  // 只有真正注入提示词或 memory_get 取用才回流；纯检索不写（尊重 2026-11-10 的只读决定）
+  recallWriteback: { enabled: true, weight: 0.5, top: 3 },
 };
 
 export function configPath(root) {
