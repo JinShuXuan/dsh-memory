@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     const React = require("react");
     const h = React.createElement;
     const NS = "dsh-memory";
-    const API = "/api/jinshuxuan/dsh-memory";
+    const API = "/memory-api";
 
     const STR = {
       zh: {
@@ -116,18 +116,27 @@ window.__ModuleLoader__.load({
       const [data, setData] = React.useState(null);
       const [draft, setDraft] = React.useState({});
       const [msg, setMsg] = React.useState("");
+      const [error, setError] = React.useState("");
       const [restart, setRestart] = React.useState(false);
       const load = React.useCallback(async () => {
+        setError("");
         try {
           const d = await api("/config");
           setData(d);
           setDraft(d.config);
         } catch (e) {
+          setError(String(e.message || e));
           setMsg(String(e.message || e));
         }
       }, []);
       React.useEffect(() => { void load(); }, [load]);
-      if (!data) return h("div", null, t("common.loading"));
+      if (!data) {
+        return error
+          ? h("div", { style: { display: "flex", gap: 10, alignItems: "center", color: "#e5484d" } },
+              h("span", null, t("common.failed") + "：" + error),
+              h("button", { style: btn, onClick: () => void load() }, t("common.retry")))
+          : h("div", null, t("common.loading"));
+      }
       const groups = [];
       for (const f of data.schema) {
         let g = groups.find((x) => x.name === f.group);
