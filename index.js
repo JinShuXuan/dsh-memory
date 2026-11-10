@@ -3770,6 +3770,7 @@ function runtimeApi(config) {
     saveConfig: (patch) => saveConfig(ROOT, patch),
     resolveApiKey: () => resolveApiKey(loadConfig()),
     maskKey,
+    log,
   };
 }
 

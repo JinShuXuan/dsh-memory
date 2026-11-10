@@ -282,10 +282,16 @@ export function attachService(ctx, store, api) {
     ["/export", "POST", (b) => service.exportFacts(b?.path)],
   ];
 
-  try {
-    const connection = ctx.get?.("connection") ?? ctx.connection;
+  let mounted = false;
+  const mount = (connection) => {
     const register = connection?.fetch?.register;
-    if (typeof register === "function") {
+    if (typeof register !== "function" || mounted) return;
+    mounted = true;
+    try {
+      api.log?.("面板接口已挂载：" + API_PREFIX);
+    } catch {
+      /* ignore */
+    }
       // 独立页面兜底：客户端插件没被加载时，用户仍可直接打开 /api/memory/ui
       register({
         path: API_PREFIX + "/ui",
@@ -327,10 +333,24 @@ export function attachService(ctx, store, api) {
           },
         });
       }
-    }
+  };
+
+  // web 载体可能晚于本插件就绪：先直接取，取不到再用 cordis 的 inject 等它出现。
+  try {
+    const direct = ctx.get?.("connection") ?? ctx.connection;
+    mount(direct);
   } catch {
-    /* headless：没有 web 服务器 */
+    /* ignore */
   }
+  if (!mounted && typeof ctx.inject === "function") {
+    try {
+      ctx.inject(["connection"], (c) => mount(c?.connection ?? c?.get?.("connection")));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!mounted) api.log?.("web 载体未就绪：面板接口未挂载（/api/... 会 404）");
 
   return service;
 }
