@@ -1,6 +1,6 @@
 {
   "name": "@jinshuxuan/dsh-memory",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "DSH 本地长期记忆：SQLite 全文检索 + 本地向量混合召回、规则自动抽取、关系图；模型缺失自动退化纯 FTS，零 API 花费。",
   "type": "module",
   "main": "./index.js",
@@ -13,19 +13,19 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
-    "p1.js",
-    "papers.js",
-    "embed.js",
-    "src/",
-    "client/",
-    "locale/",
-    "cordis.patch.yml",
-    "icon.svg",
     "README*.md",
-    "LICENSE",
-    "CHANGELOG.md",
-    "docs/"
+    "README*.md",
+    "README*.md",
+    "README*.md",
+    "README*.md",
+    "README*.md",
+    "README*.md",
+    "README*.md",
+    "README*.md",
+    "README*.md",
+    "README*.md",
+    "README*.md",
+    "README*.md"
   ],
   "engines": {
     "node": ">=22.5"
@@ -67,7 +67,8 @@
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-locale"
       ],
-      "platform": "web"
+      "platform": "web",
+      "immediately": true
     }
   },
   "optionalDependencies": {
