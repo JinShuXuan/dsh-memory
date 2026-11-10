@@ -2,6 +2,11 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.1.3] - 2026-11-10
+
+### 修复
+- 向量模型：优先从旧数据目录复制，其次按「自定义端点 → hf-mirror → huggingface」回退下载；解决国内网络下首次下载失败导致退化为纯 FTS。
+
 ## [0.1.2] - 2026-11-10
 
 ### 修复

@@ -1,9 +1,15 @@
 // 本地向量模型：首次按需下载，失败降级纯 FTS。任何情况下都不 throw。
-import { existsSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync, cpSync } from "node:fs";
 import { join } from "node:path";
+import { legacyRoots } from "./paths.js";
 
 const MODEL_REPO = "Xenova/bge-small-zh-v1.5";
-const BASE = `https://huggingface.co/${MODEL_REPO}/resolve/main/`;
+/** 依次尝试：自定义端点 → 国内镜像 → 官方。失败自动换下一个。 */
+const ENDPOINTS = [
+  process.env.DSH_MEMORY_HF_ENDPOINT,
+  "https://hf-mirror.com",
+  "https://huggingface.co",
+].filter(Boolean);
 const FILES = [
   { remote: "onnx/model_quantized.onnx", local: "onnx/model_quantized.onnx", minBytes: 1_000_000 },
   { remote: "tokenizer.json", local: "tokenizer.json", minBytes: 100_000 },
@@ -53,11 +59,37 @@ export async function ensureModel({ dir, log = () => {}, download = true, env = 
   }
   try {
     mkdirSync(target, { recursive: true });
+    // 0) 旧数据目录里已有模型（升级用户）：直接复制，不联网、秒完成
+    for (const legacy of legacyRoots(target)) {
+      const src = join(legacy, "models", "Xenova", "bge-small-zh-v1.5");
+      if (existsSync(join(src, "onnx", "model_quantized.onnx"))) {
+        try {
+          cpSync(src, target, { recursive: true });
+          log("model copied from legacy root:", src);
+          const copied = modelStatus(target);
+          if (copied.present) return { ready: true, path: target, error: null };
+        } catch (error) {
+          log("model copy failed:", String(error?.message ?? error));
+        }
+      }
+    }
+    // 1) 下载：端点依次回退
     for (const f of FILES) {
       const dest = join(target, f.local);
       if (existsSync(dest)) continue;
-      log("model download:", f.remote);
-      await downloadTo(BASE + f.remote, dest, f.minBytes);
+      let lastError = null;
+      for (const base of ENDPOINTS) {
+        try {
+          log("model download:", `${base}/${MODEL_REPO}/resolve/main/${f.remote}`);
+          await downloadTo(`${base}/${MODEL_REPO}/resolve/main/${f.remote}`, dest, f.minBytes);
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          log("endpoint failed:", base, String(error?.message ?? error));
+        }
+      }
+      if (lastError) throw lastError;
     }
     const after = modelStatus(target);
     return after.present
