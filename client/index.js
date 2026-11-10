@@ -9,7 +9,23 @@ window.__ModuleLoader__.load({
     const React = require("react");
     const h = React.createElement;
     const NS = "dsh-memory";
-    const API = "/memory-api";
+    // 不同宿主版本对插件路由前缀的约定不同：逐个探测，用第一个能通的。
+    const API_BASES = ["/api/jinshuxuan/dsh-memory", "/api/@jinshuxuan/dsh-memory", "/memory-api"];
+    let apiBase = API_BASES[0];
+    let apiProbe = null;
+    async function detectBase() {
+      if (apiProbe) return apiProbe;
+      apiProbe = (async () => {
+        for (const base of API_BASES) {
+          try {
+            const res = await fetch(base + "/stats", { method: "GET" });
+            if (res.ok) { apiBase = base; return base; }
+          } catch { /* 试下一个 */ }
+        }
+        return null;
+      })();
+      return apiProbe;
+    }
 
     const STR = {
       zh: {
@@ -50,7 +66,8 @@ window.__ModuleLoader__.load({
     const t = makeT("zh");
 
     async function api(path, method = "GET", body) {
-      const res = await fetch(API + path, {
+      const base = await detectBase();
+      const res = await fetch((base || apiBase) + path, {
         method,
         headers: body ? { "content-type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,

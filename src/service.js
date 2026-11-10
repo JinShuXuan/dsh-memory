@@ -5,7 +5,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const API_PREFIX = "/memory-api";
+// 宿主对路由前缀有约定，不同版本可能不同：全部注册一遍，客户端挑能通的那个。
+const API_PREFIXES = ["/api/jinshuxuan/dsh-memory", "/api/@jinshuxuan/dsh-memory", "/memory-api"];
+const API_PREFIX = API_PREFIXES[0];
 const IS_WIN = process.platform === "win32";
 
 /** 配置项清单：面板按这个顺序渲染，essentials 在最上面。 */
@@ -292,9 +294,9 @@ export function attachService(ctx, store, api) {
     } catch {
       /* ignore */
     }
-      // 独立页面兜底：客户端插件没被加载时，用户仍可直接打开 /api/memory/ui
-      register({
-        path: "/memory-ui",
+      // 独立页面兜底 + 多前缀探测
+      for (const pfx of API_PREFIXES) register({
+        path: pfx + "/ui",
         methods: ["GET"],
         fetch: async () => {
           try {
@@ -310,9 +312,9 @@ export function attachService(ctx, store, api) {
           }
         },
       });
-      for (const [path, method, run] of routes) {
+      for (const pfx of API_PREFIXES) for (const [path, method, run] of routes) {
         register({
-          path: API_PREFIX + path,
+          path: pfx + path,
           methods: [method],
           requestBody: method === "POST" ? "buffered" : undefined,
           fetch: async (req) => {

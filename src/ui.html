@@ -38,7 +38,14 @@
 <nav id="nav"></nav>
 <main id="main">加载中…</main>
 <script>
-const API = "/memory-api";
+const API_BASES = ["/api/jinshuxuan/dsh-memory", "/api/@jinshuxuan/dsh-memory", "/memory-api"];
+let API = API_BASES[0];
+let API_PICKED = false;
+async function pickBase() {
+  for (const base of API_BASES) {
+    try { const r = await fetch(base + "/stats"); if (r.ok) { API = base; return; } } catch (e) { /* next */ }
+  }
+}
 const $ = (s) => document.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
   const el = document.createElement(tag);
@@ -67,6 +74,7 @@ function renderNav() {
   for (const [k, label] of TABS) nav.append(h("button", { class: k === tab ? "on" : "", onclick: () => { tab = k; render(); } }, label));
 }
 async function render() {
+  if (!API_PICKED) { await pickBase(); API_PICKED = true; }
   renderNav();
   const main = $("#main"); main.innerHTML = "";
   main.append(h("div", { class: "muted" }, "加载中…"));
