@@ -10,6 +10,8 @@
 dsh plugin --profile <profile> add @jinshuxuan/dsh-memory
 ```
 
+> 设置页里找不到「记忆库」时，可直接在浏览器打开 `http://127.0.0.1:<DSH端口>/api/memory/ui` —— 同一套中文面板，功能一样。
+
 ---
 
 ## 它做什么
