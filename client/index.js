@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     const React = require("react");
     const h = React.createElement;
     const NS = "dsh-memory";
-    const API = "/api/memory";
+    const API = "/api/jinshuxuan/dsh-memory";
 
     const STR = {
       zh: {

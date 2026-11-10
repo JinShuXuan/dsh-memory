@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const API_PREFIX = "/api/memory";
+const API_PREFIX = "/api/jinshuxuan/dsh-memory";
 const IS_WIN = process.platform === "win32";
 
 /** 配置项清单：面板按这个顺序渲染，essentials 在最上面。 */

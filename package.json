@@ -1,6 +1,6 @@
 {
   "name": "@jinshuxuan/dsh-memory",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "DSH 本地长期记忆：SQLite 全文检索 + 本地向量混合召回、规则自动抽取、关系图；模型缺失自动退化纯 FTS，零 API 花费。",
   "type": "module",
   "main": "./index.js",
