@@ -2,6 +2,9 @@
 // 独立模块：不 import/修改 index.js，只通过 api 注入的 db / addTool / store 工作。
 // 导出：default registerErrorLedger(api) → 注册 3 个工具并返回可复用 API
 //       createErrorLedger(api) / toolDefs(api) / signatureOf(cmd, root_cause) / ERROR_TABLE_DDL
+//       sanitize(text)  脱敏（幂等，可单独用）
+//       ledgerAdmin(api) → (opts) => {ok,...}；ledgerAdmin(api, opts) 立即执行
+//       admin 动作：list / delete（软删 status=deleted）/ purge（硬删）/ export（JSONL）
 //
 // api 形状（以 index.js 实况为准）：
 //   db        required  DatabaseSync（store.db）；也接受 () => db | Promise<db>
@@ -14,8 +17,8 @@
 //   errorSubject optional 写回事实的 subject，默认 "dsh"
 
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const DEFAULT_ROOT = process.env.DSH_MEMORY_ROOT || "~/.dsh-memory";
 const TEXT_OUTPUT = { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: String(v) }] };
@@ -33,11 +36,68 @@ CREATE TABLE IF NOT EXISTS error_ledger (
   where_solution TEXT,
   applied INTEGER DEFAULT 0,
   hits INTEGER DEFAULT 0,
-  processed_at TEXT
+  processed_at TEXT,
+  status TEXT DEFAULT 'active',
+  updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_error_ledger_ts ON error_ledger(ts);
 CREATE INDEX IF NOT EXISTS idx_error_ledger_applied ON error_ledger(applied);
 `;
+
+/** 台账脱敏：密钥 / Bearer / 口令键值 / Windows 用户目录；幂等（sanitize(sanitize(x)) === sanitize(x)） */
+const RE_SK = /sk-[A-Za-z0-9_-]{6,}/g;
+const RE_PAT = /(gh[pous]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/g;
+const RE_BEARER = /Bearer\s+[A-Za-z0-9._\-]+/g;
+const RE_KV = /(password|passwd|api[_-]?key|secret|token)\s*[=:]\s*\S+/gi;
+const RE_WINHOME = /([A-Za-z]:\\Users\\)[^\\\s]+/g;
+
+/** 把密钥/口令/用户名换成 ***；非字符串安全；对已脱敏文本再跑结果不变 */
+export function sanitize(text) {
+  let out = String(text ?? "");
+  if (!out) return "";
+  out = out.replace(RE_SK, "sk-***");
+  out = out.replace(RE_PAT, "***");
+  out = out.replace(RE_BEARER, "Bearer ***");
+  out = out.replace(/Bearer\s+["'][^"']+["']/gi, "Bearer ***");
+  out = out.replace(RE_KV, "$1=***");
+  out = out.replace(RE_WINHOME, "$1***");
+  return out;
+}
+
+/** 旧库补列（幂等）：status 软删标记 / updated_at 排序时间 */
+function migrateLedger(db) {
+  const cols = new Set(db.prepare("PRAGMA table_info(error_ledger)").all().map((c) => String(c.name)));
+  if (!cols.has("status")) db.exec("ALTER TABLE error_ledger ADD COLUMN status TEXT DEFAULT 'active'");
+  if (!cols.has("updated_at")) db.exec("ALTER TABLE error_ledger ADD COLUMN updated_at TEXT");
+}
+
+/** 未软删过滤条件（老行 status 为 NULL 也视为有效） */
+const LIVE = "(status IS NULL OR status <> 'deleted')";
+const ADMIN_FIELDS = [
+  "id",
+  "signature",
+  "ts",
+  "cmd",
+  "symptom",
+  "root_cause",
+  "lesson",
+  "where_solution",
+  "applied",
+  "hits",
+  "processed_at",
+  "status",
+  "updated_at",
+];
+
+/** 单行脱敏 + 只保留稳定字段（export / list 共用） */
+function cleanEntry(row) {
+  const out = {};
+  for (const k of ADMIN_FIELDS) {
+    const v = row?.[k];
+    out[k] = ["id", "applied", "hits"].includes(k) ? Number(v ?? 0) : ["processed_at", "updated_at"].includes(k) ? (v ?? null) : sanitize(v ?? "");
+  }
+  return out;
+}
 
 const nowIso = () => new Date().toISOString();
 const norm = (v) =>
@@ -98,6 +158,7 @@ export function createErrorLedger(api = {}) {
     if (!db) throw new Error("NO_DB");
     if (!ready) {
       db.exec(ERROR_TABLE_DDL);
+      migrateLedger(db);
       ready = true;
     }
     return db;
@@ -108,28 +169,30 @@ export function createErrorLedger(api = {}) {
   /** 写台账；同 signature 只累加 hits + 补 lesson，不新增行 */
   const report = async ({ cmd, symptom, root_cause, lesson, where_solution } = {}) => {
     const db = await dbOf();
-    const command = clip(cmd, 300);
-    const sym = clip(symptom, 300);
+    const command = clip(sanitize(cmd), 300);
+    const sym = clip(sanitize(symptom), 300);
     if (!command && !sym) return { ok: false, code: "EMPTY", message: "cmd 或 symptom 至少一项" };
-    const rootCause = clip(root_cause, 300);
+    const rootCause = clip(sanitize(root_cause), 300);
+    const les = clip(sanitize(lesson), 300);
+    const where = clip(sanitize(where_solution), 300);
     const sig = signatureOf(command, rootCause);
     const row = db.prepare("SELECT id, hits FROM error_ledger WHERE signature = ?").get(sig);
     if (row) {
       db.prepare(
-        `UPDATE error_ledger SET hits = hits + 1,
+        `UPDATE error_ledger SET hits = hits + 1, updated_at = ?,
            lesson = CASE WHEN ? <> '' THEN ? ELSE lesson END,
            where_solution = CASE WHEN ? <> '' THEN ? ELSE where_solution END
          WHERE id = ?`,
-      ).run(String(lesson ?? ""), clip(lesson, 300), String(where_solution ?? ""), clip(where_solution, 300), row.id);
+      ).run(nowIso(), les, les, where, where, row.id);
       const hits = Number(row.hits ?? 0) + 1;
       return { ok: true, deduped: true, id: Number(row.id), signature: sig, hits };
     }
     const info = db
       .prepare(
-        `INSERT INTO error_ledger (signature, ts, cmd, symptom, root_cause, lesson, where_solution, applied, hits)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1)`,
+        `INSERT INTO error_ledger (signature, ts, cmd, symptom, root_cause, lesson, where_solution, applied, hits, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?)`,
       )
-      .run(sig, nowIso(), command, sym, rootCause, clip(lesson, 300), clip(where_solution, 300));
+      .run(sig, nowIso(), command, sym, rootCause, les, where, nowIso());
     return { ok: true, deduped: false, id: Number(info.lastInsertRowid), signature: sig, hits: 1 };
   };
 
@@ -148,7 +211,7 @@ export function createErrorLedger(api = {}) {
         params.push(likeOf(t));
       }
     }
-    const rows = await query(`SELECT * FROM error_ledger WHERE ${where.join(" OR ")}`, params);
+    const rows = await query(`SELECT * FROM error_ledger WHERE ${LIVE} AND (${where.join(" OR ")})`, params);
     const scored = rows.map((r) => {
       let score = 0;
       for (const t of tokens) {
@@ -163,11 +226,11 @@ export function createErrorLedger(api = {}) {
       id: Number(row.id),
       hits: Number(row.hits ?? 0),
       applied: Number(row.applied ?? 0),
-      cmd: row.cmd ?? "",
-      symptom: row.symptom ?? "",
-      root_cause: row.root_cause ?? "",
-      lesson: row.lesson ?? "",
-      where_solution: row.where_solution ?? "",
+      cmd: sanitize(row.cmd ?? ""),
+      symptom: sanitize(row.symptom ?? ""),
+      root_cause: sanitize(row.root_cause ?? ""),
+      lesson: sanitize(row.lesson ?? ""),
+      where_solution: sanitize(row.where_solution ?? ""),
     }));
     if (!picked.length) return { ok: true, rows: [], text: "无记录" };
     const lines = picked.map((r) =>
@@ -189,7 +252,7 @@ export function createErrorLedger(api = {}) {
       const marker = `error_ledger:${id}`;
       const old = existsSync(file) ? readFileSync(file, "utf8") : "";
       if (old.includes(marker)) return { file, skipped: true };
-      const line = `- ${nowIso()} ${clip(factValue, 150)} [${marker}]`;
+      const line = `- ${nowIso()} ${clip(sanitize(factValue), 150)} [${marker}]`;
       appendFileSync(file, old.endsWith("\n") || !old ? line + "\n" : `\n${line}\n`, "utf8");
       return { file, skipped: false };
     } catch (error) {
@@ -256,21 +319,28 @@ export function createErrorLedger(api = {}) {
     return { id: Number(row.id), skipped: false, via };
   };
 
+  /** 读取路径脱敏：历史脏行在写回前再过滤一次 */
+  const cleanRow = (row) => {
+    const out = { ...row };
+    for (const c of COLS) out[c] = sanitize(row[c] ?? "");
+    return out;
+  };
+
   const writeback = async ({ id, all } = {}) => {
     const db = await dbOf();
     let rows;
     if (Number(all) === 1) {
       rows = db
-        .prepare("SELECT * FROM error_ledger WHERE applied = 0 ORDER BY hits DESC, id ASC LIMIT 20")
+        .prepare(`SELECT * FROM error_ledger WHERE applied = 0 AND ${LIVE} ORDER BY hits DESC, id ASC LIMIT 20`)
         .all();
     } else {
       const n = Number(id);
       if (!Number.isFinite(n)) return { ok: false, code: "NO_ID", message: "需要 id 或 all=1", done: 0 };
-      rows = db.prepare("SELECT * FROM error_ledger WHERE id = ?").all(n);
-      if (!rows.length) return { ok: false, code: "NOT_FOUND", message: `无 #${n}`, done: 0 };
+      rows = db.prepare(`SELECT * FROM error_ledger WHERE id = ? AND ${LIVE}`).all(n);
+      if (!rows.length) return { ok: false, code: "NOT_FOUND", message: `无 #${n}（或已删除）`, done: 0 };
     }
     const out = [];
-    for (const row of escapeRows(rows)) out.push(await writebackOne(row));
+    for (const row of escapeRows(rows)) out.push(await writebackOne(cleanRow(row)));
     const done = out.filter((r) => !r.skipped).length;
     const skip = out.length - done;
     return { ok: true, done, skipped: skip, results: out };
@@ -282,12 +352,17 @@ export function createErrorLedger(api = {}) {
       const db = await dbOf();
       const cutoff = new Date(Date.now() - Math.max(0, Number(days) || 1) * 86400000).toISOString();
       const count = Number(
-        db.prepare("SELECT COUNT(*) AS n FROM error_ledger WHERE ts >= ?").get(cutoff)?.n ?? 0,
+        db.prepare(`SELECT COUNT(*) AS n FROM error_ledger WHERE ts >= ? AND ${LIVE}`).get(cutoff)?.n ?? 0,
       );
       const top = db
-        .prepare("SELECT signature, cmd, lesson, hits FROM error_ledger ORDER BY hits DESC, id DESC LIMIT 5")
+        .prepare(`SELECT signature, cmd, lesson, hits FROM error_ledger WHERE ${LIVE} ORDER BY hits DESC, id DESC LIMIT 5`)
         .all()
-        .map((r) => ({ signature: r.signature, cmd: r.cmd ?? "", lesson: r.lesson ?? "", hits: Number(r.hits ?? 0) }));
+        .map((r) => ({
+          signature: r.signature,
+          cmd: sanitize(r.cmd ?? ""),
+          lesson: sanitize(r.lesson ?? ""),
+          hits: Number(r.hits ?? 0),
+        }));
       return { count, top };
     } catch (error) {
       log("error-ledger summarize failed:", String(error?.message ?? error));
@@ -295,7 +370,69 @@ export function createErrorLedger(api = {}) {
     }
   };
 
-  return { ensureTable: dbOf, report, search, writeback, summarizeErrors, resolveDb };
+  /**
+   * 台账管理：list / delete（软删 status=deleted）/ purge（硬删）/ export（JSONL）
+   * 一律不抛：失败返回 { ok:false, code, message }
+   */
+  const admin = async ({ action, id, query: rawQuery, outFile, format } = {}) => {
+    try {
+      const db = await dbOf();
+      const act = String(action ?? "list").toLowerCase();
+      if (act === "list") {
+        const needle = norm(rawQuery);
+        let filter = LIVE;
+        const params = [];
+        if (needle) {
+          filter += ` AND (${COLS.map((c) => `${c} LIKE ?`).join(" OR ")})`;
+          for (let i = 0; i < COLS.length; i += 1) params.push(`%${needle}%`);
+        }
+        const list = escapeRows(
+          db.prepare(`SELECT * FROM error_ledger WHERE ${filter} ORDER BY hits DESC, id DESC LIMIT 20`).all(...params),
+        ).map(cleanEntry);
+        const text = list.length
+          ? list
+              .map((r) => clip(`#${r.id}(hits=${r.hits}) ${r.cmd || r.symptom} @${String(r.updated_at ?? r.ts ?? "")}`, 200))
+              .join("\n")
+          : "无记录";
+        return { ok: true, action: "list", rows: list, count: list.length, text };
+      }
+      if (act === "delete" || act === "purge") {
+        const n = Number(id);
+        if (!Number.isFinite(n)) return { ok: false, action: act, code: "NO_ID", message: "需要 id" };
+        const info =
+          act === "delete"
+            ? db.prepare("UPDATE error_ledger SET status = 'deleted', updated_at = ? WHERE id = ?").run(nowIso(), n)
+            : db.prepare("DELETE FROM error_ledger WHERE id = ?").run(n);
+        const changed = Number(info?.changes ?? 0);
+        if (!changed) return { ok: false, action: act, code: "NOT_FOUND", message: `无 #${n}` };
+        return {
+          ok: true,
+          action: act,
+          id: n,
+          [act === "delete" ? "deleted" : "removed"]: changed,
+          text: act === "delete" ? `error#${n} 已软删` : `error#${n} 已硬删`,
+        };
+      }
+      if (act === "export") {
+        const fmt = String(format ?? "jsonl").toLowerCase();
+        if (fmt !== "jsonl") return { ok: false, action: "export", code: "BAD_FORMAT", message: "只支持 format=jsonl" };
+        const all = escapeRows(db.prepare(`SELECT * FROM error_ledger WHERE ${LIVE} ORDER BY id ASC`).all()).map(cleanEntry);
+        const jsonl = all.map((r) => JSON.stringify(r)).join("\n");
+        let path = null;
+        if (outFile) {
+          path = String(outFile);
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, jsonl ? `${jsonl}\n` : "", "utf8");
+        }
+        return { ok: true, action: "export", path, rows: all.length, text: jsonl };
+      }
+      return { ok: false, action: act, code: "BAD_ACTION", message: `未知动作 ${act}（list/delete/purge/export）` };
+    } catch (error) {
+      return { ok: false, code: "ADMIN_FAILED", message: clip(error?.message ?? error, 160) };
+    }
+  };
+
+  return { ensureTable: dbOf, report, search, writeback, summarizeErrors, resolveDb, admin };
 }
 
 const guard = (ledger, name, fn) => async (args = {}) => {
@@ -366,6 +503,18 @@ const buildDefs = (ledger) => [
   },
 ];
 
+/**
+ * 台账管理入口（给 index.js 的 memory_admin 接线用）：
+ *   const admin = ledgerAdmin({ db, log });  await admin({ action: "list" })
+ *   await ledgerAdmin({ db, log }, { action: "delete", id: 3 })   // 立即执行
+ * 两种调用都可用，返回值恒为 Promise<{ ok, ... }>，不抛。
+ */
+export function ledgerAdmin(api = {}, opts) {
+  const ledger = createErrorLedger(api);
+  const run = (o = {}) => ledger.admin(o);
+  return opts === undefined ? run : run(opts);
+}
+
 /** 生成工具定义（不注册），便于胶水自行过滤/改名 */
 export function toolDefs(api = {}) {
   const ledger = createErrorLedger(api);
@@ -399,5 +548,6 @@ export default function registerErrorLedger(api = {}) {
     writeback: ledger.writeback,
     summarizeErrors: ledger.summarizeErrors,
     ensureTable: ledger.ensureTable,
+    admin: ledger.admin,
   };
 }

@@ -17,7 +17,7 @@ export const GROUPS = [
   {
     name: "memory_error",
     description:
-      "错误台账（合并工具）。action=report：把刚发生的错误记进台账（同 signature 只累加 hits）；action=search：动手前先查历史教训（query 必填，limit≤5，每条 ≤200 字符）；action=writeback：把台账条目写回长期记忆（id 指定一条，或 all=1 批量）。",
+      "错误台账：report 记错（同签名只加 hits）、search 查教训（query 必填）、writeback 写回记忆。",
     actions: {
       report: "memory_error_report",
       search: "memory_error_search",
@@ -27,7 +27,7 @@ export const GROUPS = [
   {
     name: "memory_skill",
     description:
-      "skill 草稿（合并工具）。action=draft：把可复用经验写成草稿（title+steps，3-8 步）；action=list：列出草稿与成熟度（limit≤20，只读）；action=suggest：按 subject 给出沉淀建议（只读，不写文件）。",
+      "skill 草稿：draft 写经验步骤（3-8 步）、list 看草稿与成熟度、suggest 按 subject 提沉淀建议。",
     actions: {
       draft: "memory_skill_draft",
       list: "memory_skill_list",

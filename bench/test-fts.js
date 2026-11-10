@@ -284,6 +284,103 @@ await checkAsync("normalizeSubjects：dry-run 不写库，apply 同步 md", () =
   norm.db.close();
 });
 
+// 2026-11-11（B1）：来源分级 —— 同激活、同 BM25 下，分数只差 sourceTier
+await checkAsync("来源序：explicit 排 auto 前、inferred 排 auto 后", async () => {
+  const mk = (tier, suffix) => {
+    const r = main.store.store({
+      value: `来源序标记${suffix}`,
+      subject: "bench",
+      predicate: `tier_${tier}`,
+      tags: ["bench"],
+      scope: "global",
+      sourceType: tier,
+    });
+    assert(r?.id, `store(${tier}) 失败：${JSON.stringify(r)}`);
+    return r.id;
+  };
+  const autoId = mk("auto", "甲");
+  const explicitId = mk("explicit", "乙");
+  const inferredId = mk("inferred", "丙");
+  const hits = await main.store.search("来源序标记", undefined, 10);
+  const order = hits.map((h) => h.id);
+  const pos = (id) => order.indexOf(id);
+  assert(pos(explicitId) >= 0 && pos(autoId) >= 0 && pos(inferredId) >= 0, `命中不全：${order.join(",")}`);
+  assert(pos(explicitId) < pos(autoId), `explicit@${pos(explicitId)} 未排到 auto@${pos(autoId)} 前`);
+  assert(pos(autoId) < pos(inferredId), `auto@${pos(autoId)} 未排到 inferred@${pos(inferredId)} 前`);
+});
+
+// 2026-11-11（D）：语义路缺席时按 wB+wS 归一，pin+inferred 的强度分不能压过词面强匹配
+await checkAsync("renorm：语义缺席时 pinned 不能仅凭强度冲第一", async () => {
+  const t = openStore("tier");
+  try {
+    const weak = t.store.store({
+      value: "排名测试 用来验证 pin 强度不能霸榜",
+      subject: "bench",
+      predicate: "renorm_weak",
+      tags: ["bench"],
+      scope: "global",
+      sourceType: "inferred",
+    });
+    const strong = t.store.store({
+      value: "排名测试 排名测试 排名测试 排名测试 排名测试",
+      subject: "bench",
+      predicate: "renorm_strong",
+      tags: ["bench"],
+      scope: "global",
+      sourceType: "auto",
+    });
+    assert(weak?.id && strong?.id, `store 失败：${JSON.stringify({ weak, strong })}`);
+    t.db.prepare("UPDATE memory SET pinned = 1 WHERE id = ?").run(weak.id);
+    const hits = await t.store.search("排名测试", undefined, 10);
+    assert(hits.length >= 2, `命中数 ${hits.length}`);
+    assert(hits[0].id === strong.id, `top1=${hits[0].id}（strong=${strong.id} weak=${weak.id}）`);
+  } finally {
+    t.db.close();
+  }
+});
+
+// 2026-11-11（C2）：检索命中 → used_count 递增 + 置脏；flushUsage 回写 md 并清脏
+await checkAsync("学习回路：search 只读、两次 bumpUsage → used=2 且脏，flush 后 md frontmatter used: 2", async () => {
+  const r = main.store.store({
+    value: "回写标记 学习回路闭环检查",
+    subject: "bench",
+    predicate: "usage_flush",
+    tags: ["bench"],
+    scope: "global",
+  });
+  assert(r?.id, `store 失败：${JSON.stringify(r)}`);
+  await main.store.search("回写标记", undefined, 5);
+  const ro = main.db.prepare("SELECT used_count FROM memory WHERE id = ?").get(r.id);
+  assert(Number(ro.used_count ?? 0) === 0, `search 不应写 used_count=${ro.used_count}`);
+  main.store.bumpUsage([r.id]);
+  main.store.bumpUsage([r.id]);
+  const row = main.db.prepare("SELECT used_count, usage_dirty FROM memory WHERE id = ?").get(r.id);
+  assert(Number(row.used_count) === 2, `used_count=${row.used_count}`);
+  assert(Number(row.usage_dirty) === 1, `usage_dirty=${row.usage_dirty}`);
+  const flushed = main.store.flushUsage();
+  assert(flushed.written >= 1, `flush written=${flushed.written}`);
+  const after = main.db.prepare("SELECT usage_dirty FROM memory WHERE id = ?").get(r.id);
+  assert(Number(after.usage_dirty) === 0, `flush 后仍脏=${after.usage_dirty}`);
+  const md = readFileSync(join(main.root, "global", "facts", `${r.id}.md`), "utf8");
+  assert(/^used: 2$/m.test(md), `md used 不对：${md.split("\n").slice(0, 12).join(" | ")}`);
+});
+
+// 2026-11-11（复审 A）：md 落后于库时 restore 不能清脏位，否则库增量永久滞留、md 权威破裂
+await checkAsync("脏位保护：md 落后时 restore 不清脏，flush 把库增量（used=3）写回 md", async () => {
+  const r = main.store.store({ value: "脏位保护 回写竞争检查", subject: "bench", predicate: "usage_race", tags: ["bench"], scope: "global" });
+  assert(r?.id, `store 失败：${JSON.stringify(r)}`);
+  main.store.bumpUsage([r.id]);
+  main.store.bumpUsage([r.id]);
+  main.store.bumpUsage([r.id]); // 库 used=3，md 仍是 used: 0
+  main.store.restoreUsageFromMarkdown(); // md 落后：必须保住 dirty
+  const row = main.db.prepare("SELECT used_count, usage_dirty FROM memory WHERE id = ?").get(r.id);
+  assert(Number(row.used_count) === 3, `used 被 md 倒退=${row.used_count}`);
+  assert(Number(row.usage_dirty) === 1, `脏位被误清=${row.usage_dirty}`);
+  main.store.flushUsage();
+  const md = readFileSync(join(main.root, "global", "facts", `${r.id}.md`), "utf8");
+  assert(/^used: 3$/m.test(md), `md used 未追平：${md.split("\n").slice(0, 12).join(" | ")}`);
+});
+
 main.db.close();
 
 const pass = results.filter((r) => r.startsWith("PASS")).length;

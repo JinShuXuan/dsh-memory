@@ -25,6 +25,7 @@ import { resolveRoot, modelDir, legacyRoots, migrateLegacy, verifyMigration } fr
 import { DEFAULTS, configPath, loadConfig as readConfig, saveConfig, resolveApiKey, maskKey } from "./src/config.js";
 import { ensureModel } from "./src/model.js";
 import { mergeMemoryTools } from "./tool-glue.js";
+import { ledgerAdmin } from "./error-ledger.js";
 
 export const name = "@jinshuxuan/dsh-memory";
 export const inject = [];
@@ -284,6 +285,16 @@ function normScores(list, lowerBetter) {
   return out;
 }
 
+/**
+ * 2026-11-11（B1）：来源序。显式写入 > 自动抽取 > 推断。
+ * 之前只有 user_explicit +0.1 一档，auto/import/inferred 全 0，推断出来的事实和抽取的一样重。
+ */
+const SOURCE_TIER = { user_explicit: 0.2, manual: 0.15, explicit: 0.15, import: 0, auto: 0, inferred: -0.1 };
+
+function sourceTier(sourceType) {
+  return SOURCE_TIER[String(sourceType ?? "")] ?? 0;
+}
+
 // ---------------- markdown 真源 ----------------
 function frontMatter(rec) {
   const q = (v) => JSON.stringify(v ?? "");
@@ -298,6 +309,9 @@ function frontMatter(rec) {
     `layer: ${rec.layer ?? "atomic"}`,
     `confidence: ${rec.confidence}`,
     `source_type: ${rec.source_type}`,
+    // 2026-11-11（C）：学习信号落 md，向量/回流计数丢了也能从真源回灌
+    `used: ${Number(rec.used_count ?? rec.used ?? 0) || 0}`,
+    `adopted: ${Number(rec.adopted ?? 0) ? 1 : 0}`,
     `author: ${q(rec.author ?? "user")}`,
     `source_ref: ${q(rec.source_ref)}`,
     `superseded_by: ${q(rec.superseded_by)}`,
@@ -421,6 +435,12 @@ class MemoryStore {
     } catch (error) {
       // 对账失败不许把 init 一起带走：库本身能用就先放行，问题记日志
       log("对账失败：", String(error?.message ?? error));
+    }
+    // 2026-11-11（C）：md 里的 used/adopted 回灌（对账之后跑，避免刚补的 md 又被旧值覆盖）
+    try {
+      store.restoreUsageFromMarkdown();
+    } catch (error) {
+      log("usage 回灌失败：", String(error?.message ?? error));
     }
     store.resetStaleLeases();
     store.backfillEpisodeFts();
@@ -642,6 +662,11 @@ class MemoryStore {
       access_count: "INTEGER DEFAULT 0",
       author: "TEXT",
       replaces: "TEXT",
+      // 2026-11-11（C）：学习信号（用了多少次 / 是否被采纳），writeMarkdown 会落到 md frontmatter
+      used_count: "INTEGER DEFAULT 0",
+      adopted: "INTEGER DEFAULT 0",
+      // 2026-11-11（C2）：学习信号脏位——检索递增后等 flushUsage 统一回写 md
+      usage_dirty: "INTEGER DEFAULT 0",
     };
     const have = new Set(this.db.prepare("PRAGMA table_info(memory)").all().map((c) => c.name));
     for (const [name, type] of Object.entries(wanted)) {
@@ -792,6 +817,8 @@ class MemoryStore {
             updated_at: Date.parse(meta.updated_at) || Date.now(),
             md_path: full,
             content_hash: hash,
+            used_count: Number(meta.used) || 0,
+            adopted: Number(meta.adopted) ? 1 : 0,
           });
           added += 1;
         } catch (error) {
@@ -802,6 +829,53 @@ class MemoryStore {
     }
     if (added || updated) log("对账：", { added, updated });
     return { checked, added, updated };
+  }
+
+  /**
+   * 2026-11-11（C）：把 md 里的学习信号（used / adopted）回灌到库。
+   * md 是真源但回流计数只在库里涨：md 被手改、库被重建后这里补一次。
+   * 只往大了更新（幂等），库里的值更新时不去覆盖 md。
+   */
+  restoreUsageFromMarkdown() {
+    let checked = 0;
+    let updated = 0;
+    for (const [, dir] of this.factDirs()) {
+      for (const file of safeReaddir(dir)) {
+        if (!file.endsWith(".md")) continue;
+        let meta;
+        try {
+          meta = parseMd(readFileSync(join(dir, file), "utf8"))?.meta;
+        } catch {
+          continue;
+        }
+        if (!meta?.id) continue;
+        const used = Number(meta.used);
+        const adopted = Number(meta.adopted);
+        if (!Number.isFinite(used) && !Number.isFinite(adopted)) continue;
+        checked += 1;
+        try {
+          const row = this.db.prepare("SELECT used_count, adopted FROM memory WHERE id = ?").get(meta.id);
+          if (!row) continue;
+          const dbUsed = Number(row.used_count ?? 0);
+          const dbAdopted = Number(row.adopted ?? 0) ? 1 : 0;
+          const nextUsed = Number.isFinite(used) ? Math.max(dbUsed, used) : dbUsed;
+          const nextAdopted = Number.isFinite(adopted) ? Math.max(dbAdopted, adopted ? 1 : 0) : dbAdopted;
+          // md 落后于库（库已 increment 但 md 还没回写）时不能清脏位，否则增量永久滞留库里
+          const mdCaughtUp = (!Number.isFinite(used) || used >= dbUsed) && (!Number.isFinite(adopted) || (adopted ? 1 : 0) >= dbAdopted);
+          if (nextUsed === dbUsed && nextAdopted === dbAdopted) {
+            // md 与库一致：顺手清脏位，免得 flushUsage 再白写一遍
+            if (mdCaughtUp) this.db.prepare("UPDATE memory SET usage_dirty = 0 WHERE id = ? AND usage_dirty = 1").run(meta.id);
+            continue;
+          }
+          this.db.prepare("UPDATE memory SET used_count = ?, adopted = ?, usage_dirty = 0 WHERE id = ?").run(nextUsed, nextAdopted, meta.id);
+          updated += 1;
+        } catch (error) {
+          log("usage 回灌失败：", meta.id, String(error?.message ?? error));
+        }
+      }
+    }
+    if (updated) log("usage 回灌：", { checked, updated });
+    return { checked, updated };
   }
 
   factDirs() {
@@ -827,8 +901,9 @@ class MemoryStore {
         .prepare(
           `INSERT INTO memory (id, scope, subject, predicate, value, tags, status, confidence, source_type, source_ref, source_seq,
              created_at, updated_at, md_path, content_hash, layer, content, content_seg, trust, superseded_by, replaces,
-             cluster_key, parent_scenario_id, node_ids, vec_state, deleted_at, expires_at, access_count, author)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             cluster_key, parent_scenario_id, node_ids, vec_state, deleted_at, expires_at, access_count, author,
+             used_count, adopted)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           rec.id,
@@ -860,6 +935,8 @@ class MemoryStore {
           rec.expires_at ?? null,
           rec.access_count ?? 0,
           rec.author ?? "user",
+          rec.used_count ?? (Number(rec.used) || 0),
+          rec.adopted ? 1 : 0,
         );
       if (this.fts) this.ftsPut(rec.id, seg, ftsRawOf(rec));
       this.db.exec("COMMIT");
@@ -1600,7 +1677,54 @@ class MemoryStore {
     });
     // 同分按创建时间新的在前（fusion 下同分很常见，靠稳定排序避免抖动）
     ranked.sort((a, b) => b._final - a._final || String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
-    return ranked.slice(0, max).map(({ _final, ...h }) => h);
+    const hits = ranked.slice(0, max).map(({ _final, ...h }) => h);
+    // 2026-11-11（C2 修订）：search 保持只读（与 v3「纯检索不写」一致）；命中不计数，避免每轮注入造成写放大
+    return hits;
+  }
+
+  /** 2026-11-11（C2）：检索命中的 used_count+1 并置脏；单条 SQL，失败只记日志不抛 */
+  bumpUsage(ids) {
+    const list = [...new Set((ids ?? []).filter(Boolean))].slice(0, 50);
+    if (list.length === 0) return 0;
+    try {
+      const ph = list.map(() => "?").join(",");
+      this.db
+        .prepare(`UPDATE memory SET used_count = COALESCE(used_count,0) + 1, usage_dirty = 1 WHERE id IN (${ph})`)
+        .run(...list);
+      return list.length;
+    } catch (error) {
+      log("usage 递增失败：", String(error?.message ?? error));
+      return 0;
+    }
+  }
+
+  /**
+   * 2026-11-11（C2）：把脏行（usage_dirty=1）重写回 md 并清脏位，默认每次最多 50 行。
+   * md 的 used/adopted 是学习信号的长期真源；库重建后由 restoreUsageFromMarkdown 回灌。
+   */
+  flushUsage(limit = 50) {
+    let rows = [];
+    try {
+      rows = this.db
+        .prepare("SELECT * FROM memory WHERE usage_dirty = 1 ORDER BY updated_at DESC LIMIT ?")
+        .all(Math.min(Math.max(Number(limit) || 50, 1), 500));
+    } catch (error) {
+      log("usage 回写查询失败：", String(error?.message ?? error));
+      return { pending: 0, written: 0 };
+    }
+    let written = 0;
+    for (const rec of rows) {
+      try {
+        // 用 hydrate 补 tags 等字段：SELECT * 拿到的是 JSON 字符串，frontMatter 需要数组
+        this.writeMarkdown(this.hydrate(rec.id));
+        this.db.prepare("UPDATE memory SET usage_dirty = 0 WHERE id = ?").run(rec.id);
+        written += 1;
+      } catch (error) {
+        log("usage 回写失败：", rec.id, String(error?.message ?? error));
+      }
+    }
+    if (written) log("usage 回写：", { pending: rows.length, written });
+    return { pending: rows.length, written };
   }
 
   /**
@@ -1608,9 +1732,19 @@ class MemoryStore {
    * bm25 只对 lexical 池做 min-max（越负越好），cos 用 (cos+1)/2 直接映射；只在一路出现的候选另一路补 0。
    */
   fusionRank(lexical, semantic, cfg) {
-    const wB = Number(cfg.wBm25 ?? 0.45);
-    const wV = Number(cfg.wVec ?? 0.35);
-    const wS = Number(cfg.wStrength ?? 0.2);
+    let wB = Number(cfg.wBm25 ?? 0.45);
+    let wV = Number(cfg.wVec ?? 0.35);
+    let wS = Number(cfg.wStrength ?? 0.2);
+    // 2026-11-11（D）：语义路缺席（没 embedder / 向量没建）时 wVec 的份量是白丢的。
+    // 把剩下两路按 wB+wS 归一，让分数回到 [0,1] 可比区间；wS=0 或两路都空时不动。
+    if (semantic.length === 0 && lexical.length > 0) {
+      const den = wB + wS;
+      if (wS > 0 && den > 0) {
+        wB = wB / den;
+        wS = wS / den;
+      }
+      wV = 0;
+    }
     const bm = normScores(lexical, true);
     const vc = normScores(semantic, false);
     const ids = new Set([...bm.keys(), ...vc.keys()]);
@@ -1633,7 +1767,8 @@ class MemoryStore {
     try {
       const act = this.activationById(id) / 1.2;
       const row = this.db.prepare("SELECT pinned, source_type FROM memory WHERE id = ?").get(id);
-      const bonus = (row?.pinned ? 0.3 : 0) + (row?.source_type === "user_explicit" ? 0.1 : 0);
+      // 2026-11-11（B1）：来源改分级制，见 SOURCE_TIER；pin 仍加性叠 0.3
+      const bonus = (row?.pinned ? 0.3 : 0) + sourceTier(row?.source_type);
       return Math.min(1, Math.max(0, act) + bonus);
     } catch {
       return 0;
@@ -2590,7 +2725,7 @@ class MemoryStore {
   hydrate(id, score) {
     const row = this.db
       .prepare(
-        "SELECT id, scope, subject, predicate, value, tags, status, source_type, created_at, confidence, md_path, pinned, pin_source, layer, updated_at FROM memory WHERE id = ?",
+        "SELECT id, scope, subject, predicate, value, tags, status, source_type, created_at, confidence, md_path, pinned, pin_source, layer, updated_at, used_count, adopted FROM memory WHERE id = ?",
       )
       .get(id);
     if (!row) return { id, score: null };
@@ -2612,6 +2747,8 @@ class MemoryStore {
       layer: row.layer ?? "atomic",
       updated_at: Number(row.updated_at ?? row.created_at),
       md_path: row.md_path,
+      used_count: Number(row.used_count ?? 0),
+      adopted: Number(row.adopted ?? 0) ? 1 : 0,
     };
   }
 
@@ -3470,6 +3607,8 @@ function applyInner(ctx) {
           // 取原文 = 真的用到了，回流加分；受 recallWriteback 开关约束（关掉即完全只读）
           const rb = loadConfig().recallWriteback ?? {};
           if (rb.enabled !== false) store.touch(hit.id, Number(rb.weight) || 0.5);
+          // 取原文 = 真用到了：used_count+1（学习信号真源，flushUsage 回写 md），与 search 只读解耦
+          if (rb.enabled !== false) store.bumpUsage([hit.id]);
           const truncated = typeof hit.content === "string" && hit.content.length > 2000;
           const content = truncated ? `${hit.content.slice(0, 2000)}\n…（已截断，还要更早的内容请直接读 md_path）` : hit.content;
           return JSON.stringify({ ok: true, ...hit, content, truncated, created_at: iso(hit.created_at) });
@@ -3916,12 +4055,26 @@ function applyInner(ctx) {
           pinned: { type: "string", description: "pin 用：1 置顶 / 0 取消" },
           review_action: { type: "string", description: "review 用：list | approve | reject" },
           review_id: { type: "string", description: "review 用：待审条目 id" },
+          target: { type: "string", description: "记忆库（默认 memory）| error = 错误台账管理" },
+          query: { type: "string", description: "target=error 的 list 用：关键词过滤" },
+          out_file: { type: "string", description: "target=error 的 export 用：导出路径" },
+          format: { type: "string", description: "target=error 的 export 用：jsonl（默认）" },
         },
         required: ["action"],
       },
       output: textOutput,
       async execute(args, exec) {
         const a = String(args?.action ?? "").toLowerCase();
+        // 2026-11-10：台账管理统一走 memory_admin，target=error 转发给 error-ledger
+        if (String(args?.target ?? "memory").toLowerCase() === "error") {
+          const store = await ensureStore(config);
+          return JSON.stringify(
+            await ledgerAdmin(
+              { db: store.db, log },
+              { action: a, id: args?.id, query: args?.query, outFile: args?.out_file, format: args?.format },
+            ),
+          );
+        }
         if (a === "delete") return callCollected("memory_delete", args, exec);
         if (a === "purge") return callCollected("memory_purge", args, exec);
         if (a === "pin") return callCollected("memory_pin", args, exec);
@@ -3955,6 +4108,12 @@ function applyInner(ctx) {
         const a = String(args?.action ?? "stats").toLowerCase();
         // 2026-11-10：journal / replay 分支原来直接引用未定义的 store，必崩
         const store = await ensureStore(config);
+        // 2026-11-11（C2）：体检/整理前先把积累的学习信号落回 md（≤50 行/次）
+        try {
+          store.flushUsage();
+        } catch (error) {
+          log("usage 回写失败：", String(error?.message ?? error));
+        }
         if (a === "stats") return callCollected("memory_stats", args, exec);
         if (a === "health") return callCollected("memory_health", args, exec);
         // 2026-11-11 索引地基：只读体检 + subject 归一（默认 dry-run，mode=apply 才写）
