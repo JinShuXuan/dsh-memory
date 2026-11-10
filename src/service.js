@@ -1,8 +1,9 @@
 // UI 用的宿主侧服务：只读查询 + 白名单写操作 + 系统原生目录对话框。
 // 不 import 任何 client 代码，headless 环境可安全跳过。
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const API_PREFIX = "/api/memory";
 const IS_WIN = process.platform === "win32";
@@ -183,6 +184,8 @@ function exportFacts(store, target) {
   return { path: target, count: rows.length };
 }
 
+const UI_HTML = join(dirname(fileURLToPath(import.meta.url)), "ui.html");
+
 /**
  * @param {object} ctx cordis 上下文
  * @param {object} store MemoryStore
@@ -283,6 +286,24 @@ export function attachService(ctx, store, api) {
     const connection = ctx.get?.("connection") ?? ctx.connection;
     const register = connection?.fetch?.register;
     if (typeof register === "function") {
+      // 独立页面兜底：客户端插件没被加载时，用户仍可直接打开 /api/memory/ui
+      register({
+        path: API_PREFIX + "/ui",
+        methods: ["GET"],
+        fetch: async () => {
+          try {
+            return new Response(readFileSync(UI_HTML, "utf8"), {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            });
+          } catch (error) {
+            return new Response(`记忆库页面不可用：${String(error?.message ?? error)}`, {
+              status: 500,
+              headers: { "content-type": "text/plain; charset=utf-8" },
+            });
+          }
+        },
+      });
       for (const [path, method, run] of routes) {
         register({
           path: API_PREFIX + path,

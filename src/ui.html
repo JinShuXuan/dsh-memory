@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>记忆库</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; background: #0f1420; color: #e6ebf5; }
+  header { padding: 14px 18px; border-bottom: 1px solid #223; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  nav { display: flex; gap: 6px; padding: 10px 18px; border-bottom: 1px solid #223; }
+  nav button { padding: 5px 12px; border-radius: 8px; border: 1px solid #2b3550; background: #141b2b; color: inherit; cursor: pointer; }
+  nav button.on { border-color: #38bdf8; color: #9bd8ff; }
+  main { padding: 16px 18px; max-width: 980px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 10px; }
+  .card { border: 1px solid #223; border-radius: 10px; padding: 10px 14px; min-width: 110px; background: #131a29; }
+  .card b { display: block; font-size: 20px; }
+  .card span { opacity: .65; font-size: 12px; }
+  .row { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid #1c2436; }
+  .row .label { min-width: 170px; }
+  .row .desc { font-size: 12px; opacity: .55; margin-left: 6px; cursor: help; }
+  input, select, button { font: inherit; }
+  input, select { padding: 5px 9px; border-radius: 8px; border: 1px solid #2b3550; background: #0f1420; color: inherit; }
+  button { padding: 5px 12px; border-radius: 8px; border: 1px solid #2b3550; background: #141b2b; color: inherit; cursor: pointer; }
+  button:hover { border-color: #38bdf8; }
+  .muted { opacity: .6; font-size: 12px; }
+  .err { color: #ff6b6b; }
+  pre { white-space: pre-wrap; font-size: 12px; opacity: .85; }
+  .item { padding: 8px 0; border-bottom: 1px solid #1c2436; }
+  .item .meta { font-size: 12px; opacity: .55; }
+  .group { margin: 14px 0; border: 1px solid #223; border-radius: 10px; padding: 8px 14px; background: #111726; }
+  .group h3 { font-size: 13px; margin: 4px 0 6px; opacity: .9; }
+</style>
+</head>
+<body>
+<header><h1>记忆库</h1><span class="muted" id="root"></span></header>
+<nav id="nav"></nav>
+<main id="main">加载中…</main>
+<script>
+const API = "/api/memory";
+const $ = (s) => document.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "onclick") el.onclick = v;
+    else if (k === "title") el.title = v;
+    else if (k === "style") el.style.cssText = v;
+    else el.setAttribute(k, v);
+  }
+  for (const k of kids) el.append(k instanceof Node ? k : document.createTextNode(String(k ?? "")));
+  return el;
+};
+async function api(path, method = "GET", body) {
+  const res = await fetch(API + path, {
+    method, headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.message || ("HTTP " + res.status));
+  return json.data;
+}
+const TABS = [["config", "配置"], ["overview", "概览"], ["browse", "浏览"], ["review", "审批"], ["maintenance", "维护"]];
+let tab = "config";
+function renderNav() {
+  const nav = $("#nav"); nav.innerHTML = "";
+  for (const [k, label] of TABS) nav.append(h("button", { class: k === tab ? "on" : "", onclick: () => { tab = k; render(); } }, label));
+}
+async function render() {
+  renderNav();
+  const main = $("#main"); main.innerHTML = "";
+  main.append(h("div", { class: "muted" }, "加载中…"));
+  try {
+    if (tab === "config") await renderConfig(main);
+    else if (tab === "overview") await renderOverview(main);
+    else if (tab === "browse") await renderBrowse(main);
+    else if (tab === "review") await renderReview(main);
+    else renderMaintenance(main);
+  } catch (e) {
+    main.innerHTML = ""; main.append(h("div", { class: "err" }, "加载失败：" + (e.message || e)));
+  }
+}
+async function renderOverview(main) {
+  const s = await api("/stats");
+  $("#root").textContent = s.root;
+  main.innerHTML = "";
+  const c = s.counts || {};
+  const cards = h("div", { class: "cards" });
+  for (const [k, label] of [["active", "活跃"], ["vectors", "向量"], ["links", "关联边"], ["pending", "待审"], ["trash", "回收站"], ["total", "总计"]])
+    cards.append(h("div", { class: "card" }, h("b", {}, c[k] ?? 0), h("span", {}, label)));
+  main.append(cards);
+  main.append(h("p", { class: "muted" }, "闸门：" + s.gate + " · 向量模型：" + (s.embedder?.ready ? "就绪" : "降级为纯 FTS") + (s.budget ? " · 本月花费 ¥" + Number(s.budget.used || 0).toFixed(3) + " / ¥" + Number(s.budget.limit || 0).toFixed(0) : "")));
+  main.append(h("p", { class: "muted", style: "border-left:3px solid #2b3550;padding-left:10px" },
+    "LLM 抽取默认关闭：只用规则与检索，零花费。到「配置」里填 API Key 并打开开关后才会自动抽取；每次约 0.005 元，每月上限 20 元。"));
+}
+async function renderConfig(main) {
+  const d = await api("/config");
+  $("#root").textContent = d.config.root || "";
+  main.innerHTML = "";
+  main.append(h("p", { class: "muted" }, "带 ⓘ 的项鼠标悬停可看说明；改完点保存。面板暴露 " + d.schema.length + " 项，其余仍可写 config.json。"));
+  const groups = [];
+  for (const f of d.schema) {
+    let g = groups.find((x) => x.name === f.group);
+    if (!g) { g = { name: f.group, items: [] }; groups.push(g); }
+    g.items.push(f);
+  }
+  const draft = JSON.parse(JSON.stringify(d.config));
+  const get = (k) => k.split(".").reduce((o, x) => (o == null ? undefined : o[x]), draft);
+  const set = (k, v) => { const p = k.split("."); let c = draft; for (let i = 0; i < p.length - 1; i++) c = c[p[i]] ??= {}; c[p.at(-1)] = v; };
+  const status = h("span", { class: "muted" });
+  for (const g of groups) {
+    const box = h("div", { class: "group" }, h("h3", {}, g.name));
+    for (const f of g.items) {
+      const input = (() => {
+        if (f.type === "bool") { const el = h("input", { type: "checkbox" }); el.checked = Boolean(get(f.key)); el.onchange = () => set(f.key, el.checked); return el; }
+        if (f.type === "select") { const el = h("select"); for (const o of f.options || []) el.append(h("option", { value: o }, o)); el.value = get(f.key) ?? ""; el.onchange = () => set(f.key, el.value); return el; }
+        const el = h("input", { type: f.type === "number" ? "number" : f.type === "secret" ? "password" : "text" });
+        el.value = get(f.key) ?? ""; el.style.minWidth = "240px";
+        el.oninput = () => set(f.key, f.type === "number" ? Number(el.value) : el.value);
+        return el;
+      })();
+      const line = h("div", { class: "row" },
+        h("div", { class: "label" }, f.label, h("span", { class: "desc", title: f.desc }, "ⓘ")),
+        input);
+      if (f.type === "dir") {
+        line.append(h("button", { onclick: async () => {
+          try { const r = await api("/dialog/dir", "POST", {}); if (r.ok && r.path) { input.value = r.path; set(f.key, r.path); } }
+          catch (e) { status.textContent = "选择失败：" + e.message; }
+        } }, "选择目录"));
+        line.append(h("button", { onclick: async () => {
+          try { const r = await api("/open", "POST", { path: input.value }); if (r.ok === false) status.textContent = "打不开：" + (r.code || ""); }
+          catch (e) { status.textContent = "打不开：" + e.message; }
+        } }, "打开目录"));
+      }
+      box.append(line);
+    }
+    main.append(box);
+  }
+  main.append(h("div", { class: "row" },
+    h("button", { onclick: async () => {
+      status.textContent = "保存中…";
+      try {
+        const patch = {}; for (const f of d.schema) { const p = f.key.split("."); let c = patch; for (let i = 0; i < p.length - 1; i++) c = c[p[i]] ??= {}; c[p.at(-1)] = get(f.key); }
+        const r = await api("/config", "POST", patch);
+        status.textContent = "已保存" + (r.restartRequired ? " · 路径改动需重启 DSH" : "");
+      } catch (e) { status.textContent = "保存失败：" + e.message; }
+    } }, "保存"),
+    h("button", { onclick: () => render() }, "刷新"),
+    status));
+}
+async function renderBrowse(main) {
+  main.innerHTML = "";
+  const q = h("input", { placeholder: "搜索内容 / 主语 / 谓词" }); q.style.minWidth = "260px";
+  const st = h("select"); for (const [v, l] of [["active", "活跃"], ["archived", "已归档"], ["deleted", "已删除"], ["all", "全部"]]) st.append(h("option", { value: v }, l));
+  const list = h("div");
+  const load = async () => {
+    try {
+      const d = await api("/list", "POST", { query: q.value, status: st.value, limit: 50 });
+      list.innerHTML = "";
+      list.append(h("div", { class: "muted" }, "共 " + d.total + " 条"));
+      for (const it of d.items) {
+        list.append(h("div", { class: "item" },
+          h("div", {}, it.value),
+          h("div", { class: "meta" }, it.short_id + " · " + it.subject + " · " + it.predicate + " · " + it.status + " "),
+          it.status === "deleted"
+            ? h("button", { onclick: async () => { await api("/restore", "POST", { id: it.id }); load(); } }, "恢复")
+            : h("button", { onclick: async () => { await api("/delete", "POST", { id: it.id }); load(); } }, "删除")));
+      }
+    } catch (e) { list.textContent = "加载失败：" + e.message; }
+  };
+  main.append(h("div", { class: "row" }, q, st, h("button", { onclick: load }, "搜索")), list);
+  load();
+}
+async function renderReview(main) {
+  main.innerHTML = "";
+  const items = await api("/pending");
+  if (!items.length) { main.append(h("div", { class: "muted" }, "没有待审条目")); return; }
+  for (const p of items) {
+    main.append(h("div", { class: "item" },
+      h("div", {}, String(p.candidate?.value || "").slice(0, 200)),
+      h("div", { class: "meta" }, p.reason + " · " + (p.candidate?.subject || "") + "/" + (p.candidate?.predicate || "")),
+      h("button", { onclick: async () => { await api("/approve", "POST", { id: p.id }); render(); } }, "通过"),
+      h("button", { onclick: async () => { await api("/reject", "POST", { id: p.id }); render(); } }, "驳回")));
+  }
+}
+function renderMaintenance(main) {
+  main.innerHTML = "";
+  const out = h("pre");
+  const run = async (action) => {
+    if (!confirm("确认执行？")) return;
+    try { out.textContent = JSON.stringify(await api("/maintenance", "POST", { action }), null, 2); }
+    catch (e) { out.textContent = "失败：" + e.message; }
+  };
+  main.append(h("div", { class: "row" },
+    h("button", { onclick: () => run("rebuild") }, "重建索引"),
+    h("button", { onclick: () => run("decay") }, "执行遗忘扫描"),
+    h("button", { onclick: () => run("cleantrash") }, "清理回收站"),
+    h("button", { onclick: async () => {
+      try {
+        const picked = await api("/dialog/export", "POST", { name: "memory-" + new Date().toISOString().slice(0, 10) + ".jsonl" });
+        if (!picked.ok) { if (picked.code !== "CANCELLED") out.textContent = "选择失败：" + picked.code; return; }
+        const r = await api("/export", "POST", { path: picked.path });
+        out.textContent = "已导出 " + r.count + " 条到\n" + r.path;
+      } catch (e) { out.textContent = "导出失败：" + e.message; }
+    } }, "导出记忆")),
+    out);
+}
+render();
+</script>
+</body>
+</html>
