@@ -26,6 +26,8 @@ dsh plugin --profile <profile> add @jinshuxuan/dsh-memory
 
 \* 向量检索要向量模型；见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。模型缺失时自动退化为纯 FTS，其它功能照常。
 
+设置页里可以**点选记忆库目录、一键导出记忆**，全部中文界面——不用手打路径，也不用记命令。见 [docs/UI.md](docs/UI.md)。
+
 ### 交给模型的工具
 
 常驻 9 个：
@@ -137,6 +139,7 @@ rm -rf ~/.dsh-memory   # 你的数据，确认要删再删
 
 ## 文档
 
+- [docs/UI.md](docs/UI.md) — 设置页：五个标签页、三个按钮、斜杠命令
 - [docs/INSTALL.md](docs/INSTALL.md) — 三种装法与干净 profile 验证
 - [docs/CONFIG.md](docs/CONFIG.md) — 全部配置项、默认值与影响面
 - [docs/PRIVACY.md](docs/PRIVACY.md) — 数据落盘位置、什么会离开本机

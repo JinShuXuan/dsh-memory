@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DEFAULTS, SCHEMA_VERSION, loadConfig, saveConfig, resolveApiKey, maskKey, configPath } from "../src/config.js";
 import { resolveRoot, modelDir, legacyRoots } from "../src/paths.js";
 import { ensureModel, modelStatus } from "../src/model.js";
-import { attachService } from "../src/service.js";
+import { attachService, __internal } from "../src/service.js";
 
 let pass = 0;
 const ok = (name, fn) => {
@@ -107,6 +107,21 @@ const tmp = () => mkdtempSync(join(tmpdir(), "dshmem-mod-"));
     A.ok(names.includes("approve"));
     A.ok(!names.includes("edit"));
     A.ok(!names.includes("updateFact"));
+  });
+}
+
+{
+  ok("设置面板配置项：必须先改项在最前", () => {
+    const schema = __internal.CONFIG_SCHEMA;
+    A.equal(schema[0].group, "先改这几项");
+    const essentials = schema.filter((f) => f.group === "先改这几项").map((f) => f.key);
+    A.ok(essentials.includes("root"));
+    A.ok(essentials.includes("extractor.enabled"));
+    A.ok(essentials.includes("extractor.apiKey"));
+    A.ok(schema.findIndex((f) => f.group !== "先改这几项") >= essentials.length, "先改项必须连续排在最前");
+  });
+  ok("每个配置项都有中文说明（悬停提示）", () => {
+    A.ok(__internal.CONFIG_SCHEMA.every((f) => typeof f.desc === "string" && f.desc.trim().length >= 4));
   });
 }
 

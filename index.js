@@ -374,14 +374,14 @@ class MemoryStore {
       store.reconcile();
     } catch (error) {
       // 对账失败不许把 init 一起带走：库本身能用就先放行，问题记日志
-      log("reconcile failed:", String(error?.message ?? error));
+      log("对账失败：", String(error?.message ?? error));
     }
     store.resetStaleLeases();
     store.backfillEpisodeFts();
     store.embedder = new Embedder({ modelDir: MODEL_DIR, log });
     void ensureModel({ dir: MODEL_DIR, log }).then((m) => {
       if (m.ready) void store.embedder.ensure();
-      else log("model unavailable, fallback to FTS:", m.error ?? "unknown");
+      else log("模型不可用，退化到 FTS：", m.error ?? "未知原因");
     });
     store.loadVectors();
     setTimeout(() => void store.backfillVectors(), 2000).unref?.();
@@ -399,7 +399,7 @@ class MemoryStore {
         const decayCfg = loadConfig().decay ?? {};
         if (decayCfg.enabled !== false && decayCfg.auto !== false && Date.now() - lastSweep > 86400000) {
           const swept = store.decaySweep({ dryRun: false });
-          if (swept?.counts) log("decay sweep:", JSON.stringify(swept.counts));
+          if (swept?.counts) log("遗忘扫描：", JSON.stringify(swept.counts));
           store.db
             .prepare("INSERT INTO meta (k, v) VALUES ('decay_sweep', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
             .run(String(Date.now()));
@@ -418,10 +418,10 @@ class MemoryStore {
               store.db
                 .prepare("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
                 .run(key, String(Date.now()));
-              log("abstract recomputed:", s.subject, "kept", r.kept ?? 0);
+              log("归纳已重算：", s.subject, "保留", r.kept ?? 0);
               done += 1;
             } catch (error) {
-              log("abstract recompute failed:", s.subject, String(error?.message ?? error));
+              log("归纳重算失败：", s.subject, String(error?.message ?? error));
             }
           }
         }
@@ -435,17 +435,17 @@ class MemoryStore {
                 limit: Number(replayCfg.perRun) || 20,
                 maxCalls: Number(replayCfg.maxCalls) || 5,
               });
-              log("replay done:", JSON.stringify(r.counts ?? {}));
+              log("重放完成：", JSON.stringify(r.counts ?? {}));
               store.db
                 .prepare("INSERT INTO meta (k, v) VALUES ('last_replay', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
                 .run(String(Date.now()));
             } catch (error) {
-              log("replay failed:", String(error?.message ?? error));
+              log("重放失败：", String(error?.message ?? error));
             }
           }
         }
       } catch (error) {
-        log("maintenance failed:", String(error?.message ?? error));
+        log("维护失败：", String(error?.message ?? error));
       }
     }, 12000).unref?.();
     return store;
@@ -468,7 +468,7 @@ class MemoryStore {
           /* ignore */
         }
       }
-      if (n > 0) log("trash cleanup:", n);
+      if (n > 0) log("回收站清理：", n);
     } catch {
       /* 没有 trash 目录 */
     }
@@ -569,7 +569,7 @@ class MemoryStore {
       this.db.exec("CREATE INDEX IF NOT EXISTS ix_link_src ON memory_link(src, weight DESC)");
       this.db.exec("CREATE INDEX IF NOT EXISTS ix_link_dst ON memory_link(dst)");
     } catch (error) {
-      log("memory_link index skipped:", String(error?.message ?? error));
+      log("memory_link 索引跳过：", String(error?.message ?? error));
     }
 
     // P1 列：老库用 ALTER 补，新库由上面的 DEFAULT 值兜住
@@ -613,14 +613,14 @@ class MemoryStore {
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_active_fact ON memory(scope, subject, predicate, content_hash) WHERE layer='atomic' AND status='active' AND deleted_at IS NULL AND subject IS NOT NULL",
       );
     } catch (error) {
-      log("ux_active_fact skipped:", String(error?.message ?? error));
+      log("ux_active_fact 跳过：", String(error?.message ?? error));
     }
     try {
       this.db.exec(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_mem_cluster ON memory(scope, cluster_key) WHERE layer='scenario' AND status='active' AND deleted_at IS NULL",
       );
     } catch (error) {
-      log("ux_mem_cluster skipped:", String(error?.message ?? error));
+      log("ux_mem_cluster 跳过：", String(error?.message ?? error));
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS ix_ep_pending ON episode(extract_state)");
     this.db.exec("CREATE INDEX IF NOT EXISTS ix_mem_layer ON memory(scope, layer, status)");
@@ -631,7 +631,7 @@ class MemoryStore {
       this.fts = true;
     } catch (error) {
       this.fts = false;
-      log("FTS5 unavailable:", String(error?.message ?? error));
+      log("FTS5 不可用：", String(error?.message ?? error));
     }
     try {
       this.db.exec(
@@ -640,7 +640,7 @@ class MemoryStore {
       this.ftsEpisode = true;
     } catch (error) {
       this.ftsEpisode = false;
-      log("episode FTS5 unavailable:", String(error?.message ?? error));
+      log("episode 的 FTS5 不可用：", String(error?.message ?? error));
     }
     const row = this.db.prepare("SELECT v FROM meta WHERE k = 'schema'").get();
     if (!row) {
@@ -704,11 +704,11 @@ class MemoryStore {
           added += 1;
         } catch (error) {
           // 单条 md 与库内 active 条撞主谓时只跳过它，不许毒化整个 reconcile
-          log("reconcile: skip", meta.id, String(error?.message ?? error));
+          log("对账：跳过", meta.id, String(error?.message ?? error));
         }
       }
     }
-    if (added || updated) log("reconcile:", { added, updated });
+    if (added || updated) log("对账：", { added, updated });
     return { checked, added, updated };
   }
 
@@ -829,12 +829,12 @@ class MemoryStore {
         }
       }
       if (best && bestCos >= minCos) {
-        log("findSameFact: hit", best.id, bestCos.toFixed(3));
+        log("findSameFact：命中", best.id, bestCos.toFixed(3));
         return best;
       }
       return null;
     } catch (error) {
-      log("findSameFact failed:", String(error?.message ?? error));
+      log("findSameFact 失败：", String(error?.message ?? error));
       return null;
     }
   }
@@ -851,7 +851,7 @@ class MemoryStore {
     if (!value) return { action: "skip" };
     const privacy = privacyCheck(value);
     if (privacy) {
-      log("resolve: denied", privacy.code);
+      log("resolve：拒绝", privacy.code);
       return { action: "denied", code: privacy.code };
     }
     if (sourceType !== "auto") {
@@ -859,11 +859,11 @@ class MemoryStore {
       if (!predicate) predicate = "noted";
     }
     if (!subject || !predicate || String(predicate).length < 2) {
-      log("resolve: reject bad structure", JSON.stringify({ subject, predicate, v: value.slice(0, 40) }));
+      log("resolve：拒绝（结构不合法）", JSON.stringify({ subject, predicate, v: value.slice(0, 40) }));
       return { action: "rejected", code: "BAD_STRUCTURE" };
     }
     if (looksLikeQuestion(value)) {
-      log("resolve: reject question-like", value.slice(0, 48));
+      log("resolve：拒绝（疑问句）", value.slice(0, 48));
       return { action: "rejected", code: "QUESTION_LIKE" };
     }
     const cand = {
@@ -909,14 +909,14 @@ class MemoryStore {
         .prepare("UPDATE memory SET tags = ?, confidence = ?, updated_at = ?, content_hash = ?, md_path = ? WHERE id = ?")
         .run(JSON.stringify(tags), confidence, now, rec.content_hash, rec.md_path, existing.id);
       this.reindexFts(existing.id, content, existing.subject, existing.predicate, tags);
-      log("resolve: merge", existing.id);
+      log("resolve：合并", existing.id);
       return { action: "merge", id: existing.id };
     }
 
     if (decision.action === "pending") {
       // 同级冲突 / 低优先级 / 推断：一律不进库，旧条保持 active，等人工裁决
       const pendingId = this.addPending({ candidate: cand, reason: decision.reason || "conflict", memoryId: existing?.id ?? null });
-      log("resolve: pending", decision.reason ?? "", "->", pendingId);
+      log("resolve：转待审", decision.reason ?? "", "->", pendingId);
       return { action: "pending", pendingId, supersededId: null };
     }
 
@@ -936,7 +936,7 @@ class MemoryStore {
     } else {
       rec = this.insertFact(cand, now);
     }
-    log("resolve: insert", rec.id, cand.source_type);
+    log("resolve：新增", rec.id, cand.source_type);
     return { action: "insert", id: rec.id, supersededId: decision.supersedeId };
   }
 
@@ -978,7 +978,7 @@ class MemoryStore {
     try {
       this.linkFor(rec.id);
     } catch (error) {
-      log("link after insert failed:", String(error?.message ?? error));
+      log("插入后建边失败：", String(error?.message ?? error));
     }
     return rec;
   }
@@ -1029,9 +1029,9 @@ class MemoryStore {
           "UPDATE episode SET extract_state = 'pending', lease_until = NULL WHERE extract_state = 'running' AND (lease_until IS NULL OR lease_until <= ?)",
         )
         .run(Date.now());
-      if (Number(r.changes) > 0) log("stale leases reset:", Number(r.changes));
+      if (Number(r.changes) > 0) log("过期租约已重置：", Number(r.changes));
     } catch (error) {
-      log("lease reset failed:", String(error?.message ?? error));
+      log("租约重置失败：", String(error?.message ?? error));
     }
   }
 
@@ -1054,7 +1054,7 @@ class MemoryStore {
       this.db.prepare("DELETE FROM episode_fts WHERE episode_id = ?").run(episodeId);
       this.db.prepare("INSERT INTO episode_fts (episode_id, seg) VALUES (?, ?)").run(episodeId, tokenize(raw).join(" "));
     } catch (error) {
-      log("episode fts index failed:", String(error?.message ?? error));
+      log("episode 的 FTS 索引失败：", String(error?.message ?? error));
     }
   }
 
@@ -1066,10 +1066,10 @@ class MemoryStore {
         .prepare("SELECT id, raw FROM episode WHERE id NOT IN (SELECT episode_id FROM episode_fts)")
         .all();
       for (const row of rows) this.indexEpisode(row.id, row.raw);
-      if (rows.length) log("episode fts backfilled:", rows.length);
+      if (rows.length) log("episode 的 FTS 已回填：", rows.length);
       return rows.length;
     } catch (error) {
-      log("episode fts backfill failed:", String(error?.message ?? error));
+      log("episode 的 FTS 回填失败：", String(error?.message ?? error));
       return 0;
     }
   }
@@ -1095,7 +1095,7 @@ class MemoryStore {
       try {
         rows = session ? this.db.prepare(sql).all(match, session, want) : this.db.prepare(sql).all(match, want);
       } catch (error) {
-        log("episode fts query failed:", String(error?.message ?? error));
+        log("episode 的 FTS 查询失败：", String(error?.message ?? error));
         rows = [];
       }
     }
@@ -1179,7 +1179,7 @@ class MemoryStore {
                 if (rn.action !== "skip" && rn.action !== "rejected") written += 1;
               }
             } catch (error) {
-              log("llm extract failed:", String(error?.message ?? error));
+              log("LLM 抽取失败：", String(error?.message ?? error));
             }
           }
           let n = 0;
@@ -1202,13 +1202,13 @@ class MemoryStore {
           this.db
             .prepare("UPDATE episode SET extract_state = 'done', extracted_at = ? WHERE id = ?")
             .run(Date.now(), ep.id);
-          log("extracted", { episode: ep.id, turn: ep.turn, facts: facts.length, written: n, droppedAuthor });
+          log("已抽取", { episode: ep.id, turn: ep.turn, facts: facts.length, written: n, droppedAuthor });
         } catch (error) {
           const attempts = Number(ep.extract_attempts ?? 0) + 1;
           this.db
             .prepare("UPDATE episode SET extract_state = ?, extract_attempts = ?, last_error = ? WHERE id = ?")
             .run(attempts >= 3 ? "failed" : "pending", attempts, String(error?.message ?? error).slice(0, 300), ep.id);
-          log("extract failed:", { episode: ep.id, attempts });
+          log("抽取失败：", { episode: ep.id, attempts });
         }
       }
     } finally {
@@ -1326,7 +1326,7 @@ class MemoryStore {
         });
       }
     } catch (error) {
-      log("md rewrite failed:", id, String(error?.message ?? error));
+      log("md 重写失败：", id, String(error?.message ?? error));
     }
     this.db
       .prepare(
@@ -1339,7 +1339,7 @@ class MemoryStore {
       try {
         this.db.prepare("DELETE FROM memory_link WHERE src = ? OR dst = ?").run(id, id);
       } catch (error) {
-        log("clear links failed:", String(error?.message ?? error));
+        log("清空连边失败：", String(error?.message ?? error));
       }
     }
   }
@@ -1352,16 +1352,16 @@ class MemoryStore {
     try {
       if (existsSync(row.md_path)) renameSync(row.md_path, join(trash, `${row.id}.md`));
     } catch (error) {
-      log("trash move failed:", String(error?.message ?? error));
+      log("移入回收站失败：", String(error?.message ?? error));
     }
     this.setStatus(row.id, "deleted");
     this.vec.delete(row.id);
     try {
       this.db.prepare("DELETE FROM memory_vec WHERE id = ?").run(row.id);
     } catch (error) {
-      log("vec delete failed:", String(error?.message ?? error));
+      log("向量删除失败：", String(error?.message ?? error));
     }
-    log("deleted", row.id, reason ?? "");
+    log("已删除", row.id, reason ?? "");
     return { id: row.id, value: row.value, md_path: row.md_path };
   }
 
@@ -1377,24 +1377,24 @@ class MemoryStore {
         )
         .run(row.id, row.md_path ?? null, row.content_hash ?? null, now);
     } catch (error) {
-      log("tombstone write failed:", String(error?.message ?? error));
+      log("墓碑写入失败：", String(error?.message ?? error));
     }
     for (const p of [row.md_path, join(this.base, "trash", `${row.id}.md`)]) {
       try {
         if (p && existsSync(p)) rmSync(p, { force: true });
       } catch (error) {
-        log("purge rm failed:", String(error?.message ?? error));
+        log("物理删除失败：", String(error?.message ?? error));
       }
     }
     try {
       if (this.fts) this.db.prepare("DELETE FROM memory_fts WHERE memory_id = ?").run(row.id);
     } catch (error) {
-      log("purge fts failed:", String(error?.message ?? error));
+      log("清除 FTS 索引失败：", String(error?.message ?? error));
     }
     try {
       this.db.prepare("DELETE FROM memory_vec WHERE id = ?").run(row.id);
     } catch (error) {
-      log("purge vec failed:", String(error?.message ?? error));
+      log("清除向量失败：", String(error?.message ?? error));
     }
     this.db.prepare("DELETE FROM memory WHERE id = ?").run(row.id);
     this.vec.delete(row.id);
@@ -1402,9 +1402,9 @@ class MemoryStore {
     try {
       this.db.prepare("DELETE FROM memory_link WHERE src = ? OR dst = ?").run(row.id, row.id);
     } catch (error) {
-      log("purge links failed:", String(error?.message ?? error));
+      log("清除连边失败：", String(error?.message ?? error));
     }
-    log("purged", row.id);
+    log("已清除", row.id);
     return { ok: true, purged: row.id };
   }
 
@@ -1417,7 +1417,7 @@ class MemoryStore {
       )
       .all(cutoff);
     for (const row of rows) this.setStatus(row.id, "archived", Date.now(), { reason: "stale" });
-    if (rows.length) log("archived stale:", rows.length);
+    if (rows.length) log("归档过期：", rows.length);
     return rows.length;
   }
 
@@ -1429,7 +1429,7 @@ class MemoryStore {
         const p = join(this.base, "trash", `${row.id}.md`);
         if (existsSync(p)) rmSync(p, { force: true });
       } catch (error) {
-        log("trash rm failed:", String(error?.message ?? error));
+        log("回收站删除失败：", String(error?.message ?? error));
       }
       this.db.prepare("UPDATE tombstone SET state = 'done' WHERE id = ?").run(row.id);
     }
@@ -1512,7 +1512,7 @@ class MemoryStore {
       this.trimLinks(src);
       this.trimLinks(dst);
     } catch (error) {
-      log("upsertLink failed:", String(error?.message ?? error));
+      log("upsertLink 失败：", String(error?.message ?? error));
     }
   }
 
@@ -1533,7 +1533,7 @@ class MemoryStore {
       const del = this.db.prepare("DELETE FROM memory_link WHERE src = ? AND dst = ? AND kind = ?");
       for (const e of extra) del.run(id, e.dst, e.kind);
     } catch (error) {
-      log("trimLinks failed:", String(error?.message ?? error));
+      log("trimLinks 失败：", String(error?.message ?? error));
     }
   }
 
@@ -1595,7 +1595,7 @@ class MemoryStore {
       }
       return made;
     } catch (error) {
-      log("linkFor failed:", String(error?.message ?? error));
+      log("linkFor 失败：", String(error?.message ?? error));
       return 0;
     }
   }
@@ -1617,9 +1617,9 @@ class MemoryStore {
         "DELETE FROM memory_link WHERE dst NOT IN (SELECT id FROM memory WHERE status = 'active' AND deleted_at IS NULL)",
       );
     } catch (error) {
-      log("backfillLinks failed:", String(error?.message ?? error));
+      log("backfillLinks 失败：", String(error?.message ?? error));
     }
-    log("links backfilled:", made);
+    log("连边已回填：", made);
     return made;
   }
 
@@ -1636,7 +1636,7 @@ class MemoryStore {
         out.push({ ...h, via_id: id, via_kind: r.kind, weight: Number(r.weight) });
       }
     } catch (error) {
-      log("linksOf failed:", String(error?.message ?? error));
+      log("linksOf 失败：", String(error?.message ?? error));
     }
     return out;
   }
@@ -1702,7 +1702,7 @@ class MemoryStore {
         .prepare("INSERT INTO memory_decay_log (id, memory_id, action, score, reason, at) VALUES (?, ?, ?, ?, ?, ?)")
         .run(newId(), memoryId, action, score, reason, Date.now());
     } catch (error) {
-      log("decay log failed:", String(error?.message ?? error));
+      log("遗忘日志写入失败：", String(error?.message ?? error));
     }
   }
 
@@ -1727,7 +1727,7 @@ class MemoryStore {
           .run(Number(weight) || 1, now, id);
         n += 1;
       } catch (error) {
-        log("touch failed:", String(error?.message ?? error));
+        log("touch 失败：", String(error?.message ?? error));
       }
     }
     return n;
@@ -1797,11 +1797,11 @@ class MemoryStore {
       try {
         this.db.prepare("UPDATE memory SET access_count = 0 WHERE id = ?").run(s.row.id);
       } catch (error) {
-        log("cool failed:", String(error?.message ?? error));
+        log("cool 失败：", String(error?.message ?? error));
       }
       this.logDecay(s.row.id, "cool", s.act, "cluster overflow");
     }
-    if (counts.archive || counts.restore || counts.cool) log("decay sweep:", JSON.stringify(counts));
+    if (counts.archive || counts.restore || counts.cool) log("遗忘扫描：", JSON.stringify(counts));
     return { ok: true, dryRun: false, counts };
   }
 
@@ -1816,7 +1816,7 @@ class MemoryStore {
         .prepare("UPDATE memory SET access_count = MAX(COALESCE(access_count, 0), 2), last_access = ? WHERE id = ?")
         .run(Date.now(), row.id);
     } catch (error) {
-      log("restore touch failed:", String(error?.message ?? error));
+      log("恢复 touch 失败：", String(error?.message ?? error));
     }
     this.logDecay(row.id, "restore", this.activationById(row.id), "manual");
     return { ok: true, restored: row.id };
@@ -2007,7 +2007,7 @@ class MemoryStore {
         raw = await llmAbstract(loadConfig(), subject, sample);
         this.recordSpend();
       } catch (error) {
-        log("abstract llm failed:", String(error?.message ?? error));
+        log("归纳 LLM 调用失败：", String(error?.message ?? error));
         continue;
       }
       const sourceText = sample.map((s) => s.value).join("\n");
@@ -2080,7 +2080,7 @@ class MemoryStore {
         .all(after)
         .map((r) => ({ coreId: r.core_id, subject: r.subject, newer: Number(r.newer), value: r.value }));
     } catch (error) {
-      log("staleAbstracts failed:", String(error?.message ?? error));
+      log("staleAbstracts 失败：", String(error?.message ?? error));
       return [];
     }
   }
@@ -2117,7 +2117,7 @@ class MemoryStore {
         )
         .all(sessionId, limit);
     } catch (error) {
-      log("knownFacts failed:", String(error?.message ?? error));
+      log("knownFacts 失败：", String(error?.message ?? error));
       return [];
     }
   }
@@ -2171,7 +2171,7 @@ class MemoryStore {
         calls += 1;
         this.recordSpend();
       } catch (error) {
-        log("replay failed:", session, String(error?.message ?? error));
+        log("重放失败：", session, String(error?.message ?? error));
         continue;
       }
       for (const f of out.newFacts) {
@@ -2220,7 +2220,7 @@ class MemoryStore {
       }
     }
     const counts = { episodes: touched, newFacts, suspicions, calls };
-    log("replay batch:", JSON.stringify(counts));
+    log("重放批次：", JSON.stringify(counts));
     return { ok: true, counts };
   }
 
@@ -2249,7 +2249,7 @@ class MemoryStore {
         .prepare("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
         .run(st.key, String(Number((st.used + cost).toFixed(6))));
     } catch (error) {
-      log("recordSpend failed:", String(error?.message ?? error));
+      log("记录花费失败：", String(error?.message ?? error));
     }
   }
 
@@ -2303,7 +2303,7 @@ class MemoryStore {
         bucket(r.created_at).turns.push({ at: hhmm(r.created_at), turn: r.turn, head: String(r.head ?? "").split("\n")[0] });
       }
     } catch (error) {
-      log("journal failed:", String(error?.message ?? error));
+      log("journal 失败：", String(error?.message ?? error));
     }
     return {
       days: span,
@@ -2327,7 +2327,7 @@ class MemoryStore {
     try {
       return scope ? this.db.prepare(sql).all(match, scope, limit) : this.db.prepare(sql).all(match, limit);
     } catch (error) {
-      log("fts query failed:", String(error?.message ?? error));
+      log("FTS 查询失败：", String(error?.message ?? error));
       return [];
     }
   }
@@ -2368,7 +2368,7 @@ class MemoryStore {
     try {
       // 换嵌入模型后旧向量必须作废：维度与语义都不兼容，混用会给出错误相似度
       const stale = this.db.prepare("DELETE FROM memory_vec WHERE model_ver IS NULL OR model_ver <> ?").run(MODEL_VER);
-      if (Number(stale.changes) > 0) log("stale vectors dropped:", Number(stale.changes));
+      if (Number(stale.changes) > 0) log("过期向量已丢弃：", Number(stale.changes));
       const rows = this.db.prepare("SELECT id, vec FROM memory_vec").all();
       for (const row of rows) {
         const buf = row.vec;
@@ -2378,7 +2378,7 @@ class MemoryStore {
       }
       log(`vectors loaded: ${this.vec.size}`);
     } catch (error) {
-      log("loadVectors failed:", String(error?.message ?? error));
+      log("加载向量失败：", String(error?.message ?? error));
     }
   }
 
@@ -2534,12 +2534,12 @@ function ensureStore(config) {
   if (!storePromise) {
     storePromise = MemoryStore.open().then((store) => {
       refreshCard(store, config);
-      log("ready", store.stats());
+      log("就绪", store.stats());
       return store;
     });
     storePromise.catch((error) => {
       storePromise = undefined;
-      log("init failed:", String(error?.message ?? error));
+      log("初始化失败：", String(error?.message ?? error));
     });
   }
   return storePromise;
@@ -2658,15 +2658,15 @@ async function trackTurn(store, sessionId, turn, decision, cfg, agent) {
         }
       }
     } catch (error) {
-      log("backfill assistants failed:", String(error?.message ?? error));
+      log("回填助手侧失败：", String(error?.message ?? error));
     }
     const transcript = [buf.user ? `用户: ${buf.user}` : "", ...buf.assistants.map((t) => `助手: ${t}`)]
       .filter(Boolean)
       .join("\n");
     if (transcript.length >= 20) {
       const id = store.saveEpisode({ session: sessionId, turn: buf.turn, transcript });
-      log("episode saved", { id, turn: buf.turn, chars: transcript.length, assistants: buf.assistants.length });
-      void store.extractPending(cfg).catch((error) => log("extract error:", String(error?.message ?? error)));
+      log("episode 已保存", { id, turn: buf.turn, chars: transcript.length, assistants: buf.assistants.length });
+      void store.extractPending(cfg).catch((error) => log("抽取出错：", String(error?.message ?? error)));
     }
     buf = { turn, user: "", assistants: [] };
     turnBuf.set(sessionId, buf);
@@ -2761,7 +2761,7 @@ function formatHits(hits, config, related = []) {
 
 function applyInner(ctx) {
   const config = loadConfig();
-  log("apply() p0-complete; pid=", process.pid, "gate=", config.gate);
+  log("apply() p0 完成；pid=", process.pid, "gate=", config.gate);
 
   // ---- 通道 1：常驻卡 ----
   ctx.inject(["systemPrompt"], (sp) => {
@@ -2771,9 +2771,9 @@ function applyInner(ctx) {
         order: 60,
         text: () => cache.rulesText || "## 记忆库（dsh-memory）\n- 正在初始化索引。",
       });
-      log("section registered");
+      log("分区已注册");
     } catch (error) {
-      log("section FAILED:", String(error?.message ?? error));
+      log("分区注册失败：", String(error?.message ?? error));
     }
   });
 
@@ -2783,7 +2783,7 @@ function applyInner(ctx) {
       try {
         toolCtx.tools.register(def);
       } catch (error) {
-        log("tool register failed:", def.name, String(error?.message ?? error));
+        log("工具注册失败：", def.name, String(error?.message ?? error));
       }
     };
     const textOutput = { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: String(v) }] };
@@ -2860,7 +2860,7 @@ function applyInner(ctx) {
               message: "与现有记忆冲突，已进待审队列（memory_review 处理）",
             });
           }
-          log("stored", result.id);
+          log("已写入", result.id);
           return JSON.stringify({
             ok: true,
             id: result.id,
@@ -2870,7 +2870,7 @@ function applyInner(ctx) {
             md_path: result.md_path,
           });
         } catch (error) {
-          log("store failed:", String(error?.message ?? error));
+          log("写入失败：", String(error?.message ?? error));
           return JSON.stringify({ ok: false, code: "STORE_FAILED", message: String(error?.message ?? error) });
         }
       },
@@ -2901,7 +2901,7 @@ function applyInner(ctx) {
           const expand = String(args.expand ?? "").toLowerCase() === "true";
           const linked = expand ? store.searchRelated(hits, 5) : [];
           // 2026-11-10：工具检索改为纯读（不再 touch）；只有真正注入或 memory_get 才计访问
-          log("search", { len: query.length, hits: hits.length, linked: linked.length });
+          log("检索", { len: query.length, hits: hits.length, linked: linked.length });
           return JSON.stringify({
             ok: true,
             count: hits.length,
@@ -2924,7 +2924,7 @@ function applyInner(ctx) {
             })),
           });
         } catch (error) {
-          log("search failed:", String(error?.message ?? error));
+          log("检索失败：", String(error?.message ?? error));
           return JSON.stringify({ ok: false, code: "SEARCH_FAILED", message: String(error?.message ?? error) });
         }
       },
@@ -2989,7 +2989,7 @@ function applyInner(ctx) {
           }
           return JSON.stringify({ ok: false, code: "BAD_ARGS", message: "action 必须是 link / unlink / list" });
         } catch (error) {
-          log("memory_link failed:", String(error?.message ?? error));
+          log("memory_link 失败：", String(error?.message ?? error));
           return JSON.stringify({ ok: false, code: "LINK_FAILED", message: String(error?.message ?? error) });
         }
       },
@@ -3034,7 +3034,7 @@ function applyInner(ctx) {
             mode,
             who,
           );
-          log("recall", { len: queryText.length, hits: hits.length, mode, who });
+          log("回忆检索", { len: queryText.length, hits: hits.length, mode, who });
           return JSON.stringify({
             ok: true,
             mode,
@@ -3049,7 +3049,7 @@ function applyInner(ctx) {
             })),
           });
         } catch (error) {
-          log("recall failed:", String(error?.message ?? error));
+          log("recall 失败：", String(error?.message ?? error));
           return JSON.stringify({ ok: false, code: "RECALL_FAILED", message: String(error?.message ?? error) });
         }
       },
@@ -3325,7 +3325,7 @@ function applyInner(ctx) {
             try {
               return store.reconcile();
             } catch (error) {
-              log("reconcile failed:", String(error?.message ?? error));
+              log("对账失败：", String(error?.message ?? error));
               return { checked: 0, added: 0, updated: 0 };
             }
           })();
@@ -3428,7 +3428,7 @@ function applyInner(ctx) {
             cool: pack(r.plan?.cool),
           });
         } catch (error) {
-          log("memory_decay failed:", String(error?.message ?? error));
+          log("memory_decay 失败：", String(error?.message ?? error));
           return JSON.stringify({ ok: false, code: "DECAY_FAILED", message: String(error?.message ?? error) });
         }
       },
@@ -3634,7 +3634,7 @@ function applyInner(ctx) {
           }
           return JSON.stringify({ ok: false, code: "BAD_ARGS", message: "action 必须是 dry-run / run / list / review" });
         } catch (error) {
-          log("memory_abstract failed:", String(error?.message ?? error));
+          log("memory_abstract 失败：", String(error?.message ?? error));
           return JSON.stringify({ ok: false, code: "ABSTRACT_FAILED", message: String(error?.message ?? error) });
         }
       },
@@ -3667,7 +3667,7 @@ function applyInner(ctx) {
       },
     });
 
-    log("tools registered: store/search/get/recall/link/admin/health/abstract/paper (9 tools)");
+    log("工具注册完成：store/search/get/recall/link/admin/health/abstract/paper（共 9 个）");
     ensureStore(config).catch(() => {});
   });
 
@@ -3686,10 +3686,10 @@ function applyInner(ctx) {
         if (sid0 && payload?.turn !== undefined) {
           ensureStore(config)
             .then((store) => trackTurn(store, sid0, payload.turn, decision, cfg, payload?.agent))
-            .catch((error) => log("trackTurn failed:", String(error?.message ?? error)));
+            .catch((error) => log("trackTurn 失败：", String(error?.message ?? error)));
         }
       } catch (error) {
-        log("trackTurn failed:", String(error?.message ?? error));
+        log("trackTurn 失败：", String(error?.message ?? error));
       }
       if (cfg.gate === "off") return decision;
 
@@ -3698,7 +3698,7 @@ function applyInner(ctx) {
         const sessionId = sessionKeyOf(agent, payload);
         const turn = payload?.turn;
         if (!sessionId || turn === undefined) {
-          log("pre-step skipped: no session/turn", { sessionId, turn });
+          log("pre-step 跳过：没有 session/turn", { sessionId, turn });
           return decision;
         }
         const key = `${sessionId}#${turn}`;
@@ -3706,7 +3706,7 @@ function applyInner(ctx) {
 
         const store = await ensureStore(config);
         if (store.sessionInjects(sessionId) >= cfg.sessionInjects) {
-          log("session cap reached", sessionId);
+          log("已达会话注入上限", sessionId);
           return decision;
         }
 
@@ -3714,7 +3714,7 @@ function applyInner(ctx) {
         if (!query) return decision;
         // 同一句话不重复注入（事件回退取到旧话时兜底）
         if (lastQuery.get(sessionId) === query) {
-          log("skip: same query as last turn");
+          log("跳过：与上轮查询相同");
           return decision;
         }
         const hits = await store.search(query, undefined, cfg.hits);
@@ -3723,7 +3723,7 @@ function applyInner(ctx) {
 
         seenTurns.add(key);
         if (cfg.gate === "shadow") {
-          log("shadow: would inject", hits.length);
+          log("shadow：本可注入（未注入）", hits.length);
           return decision;
         }
 
@@ -3734,7 +3734,7 @@ function applyInner(ctx) {
         store.touch(hits.slice(0, 3).map((h) => h.id));
         if (related.length > 0) store.touch(related.map((r) => r.id), 0.3);
         const text = formatHits(hits, cfg, related);
-        log("injecting", { turn, chars: text.length });
+        log("注入中", { turn, chars: text.length });
         return {
           kind: "enter",
           messages: [
@@ -3748,14 +3748,14 @@ function applyInner(ctx) {
           ],
         };
       } catch (error) {
-        log("pre-step failed:", String(error?.message ?? error));
+        log("pre-step 失败：", String(error?.message ?? error));
         return decision;
       }
     },
     { prepend: true },
   );
 
-  log("apply() done");
+  log("apply() 完成");
 }
 
 export { DEFAULT_CONFIG, MemoryStore, formatHits, migrateLegacy, verifyMigration };
@@ -3779,7 +3779,7 @@ async function attachOptionalModules(ctx, config) {
     const svc = await import("./src/service.js").catch(() => null);
     if (svc?.attachService) await svc.attachService(ctx, await ensureStore(config), api);
   } catch (error) {
-    log("service attach failed:", String(error?.message ?? error));
+    log("service 模块挂载失败：", String(error?.message ?? error));
   }
   try {
     const cmd = await import("./src/commands.js").catch(() => null);
@@ -3787,20 +3787,20 @@ async function attachOptionalModules(ctx, config) {
       await cmd.registerCommands(ctx, { ...api, store: await ensureStore(config) });
     }
   } catch (error) {
-    log("commands attach failed:", String(error?.message ?? error));
+    log("commands 模块挂载失败：", String(error?.message ?? error));
   }
 }
 
 export function apply(ctx) {
   try {
     const legacy = legacyRoots(ROOT);
-    if (legacy.length) log("legacy data dir detected:", legacy[0], "— set DSH_MEMORY_ROOT or run migrateLegacy()");
+    if (legacy.length) log("检测到旧数据目录：", legacy[0], "— 可用 DSH_MEMORY_ROOT 指定新目录，或运行 migrateLegacy() 迁移");
   } catch {
     /* ignore */
   }
   applyInner(ctx);
   void attachOptionalModules(ctx, loadConfig()).catch((error) =>
-    log("optional modules failed:", String(error?.message ?? error)),
+    log("可选模块加载失败：", String(error?.message ?? error)),
   );
 }
 
@@ -3812,11 +3812,11 @@ function loadConfig() {
     for (const w of warnings) {
       if (seenConfigWarnings.has(w)) continue;
       seenConfigWarnings.add(w);
-      log("config:", w);
+      log("配置：", w);
     }
     return config;
   } catch (error) {
-    log("config read failed:", String(error?.message ?? error));
+    log("配置读取失败：", String(error?.message ?? error));
     return { ...DEFAULT_CONFIG };
   }
 }

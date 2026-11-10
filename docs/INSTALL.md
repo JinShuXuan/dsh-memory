@@ -113,6 +113,34 @@ It must create the directory, print its exports, and exit 0. This also proves th
 
 ---
 
+## After installing: the first three things（装完先做的三件事）
+
+Do these in **Settings → dsh-memory**. All three are optional in the sense that the defaults already work — but doing them now saves confusion later.
+
+**1. Pick the memory directory（选记忆库目录）**
+
+Open the **配置 / Settings** tab — it is the tab the panel opens on — and press **选择目录 / Choose directory**. A native folder picker opens; do not type a path. The current root is shown next to the button.
+
+- Leave it alone if `~/.dsh-memory` is fine (it usually is).
+- Change it when the home drive is small, synced to a cloud folder, or on a network share.
+- Verify: the **概览 / Overview** tab shows the new path and a fact count, and `memory_health` reports the same root.
+
+**2. Only if you want automatic extraction: add a key and flip the switch（需要自动抽取再开）**
+
+In the same tab: paste a key (or name the env var), fill `baseURL` and `model`, then enable **LLM 抽取 / LLM extraction** and save.
+
+- Nothing is spent while the switch is off; the built-in rule extractor keeps working.
+- Verify: after a fact-bearing sentence or two, the **审批 / Review** tab starts showing candidates, and `memory_health` reports the model as configured.
+
+**3. Export a backup once（点导出备份一次）**
+
+Press **导出 / Export** on the **维护 / Maintenance** tab and choose a destination in the save dialog. You get a JSONL file, one active fact per line, without API keys.
+
+- Verify: the file exists, is non-empty, and opens as line-delimited JSON.
+- Repeat before big maintenance actions (rebuild index, cleanup) and before upgrading.
+
+Full walkthrough of every tab: [UI.md](UI.md).
+
 ## Environment variables
 
 | Variable | Effect |

@@ -1,6 +1,6 @@
 {
   "name": "@jinshuxuan/dsh-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH local long-term memory: SQLite FTS5 + local embedding hybrid retrieval, rule-based auto-extraction, relation graph. Degrades to FTS with zero API cost.",
   "type": "module",
   "main": "./index.js",

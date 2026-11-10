@@ -103,7 +103,7 @@ export class PaperStore {
       const cols = new Set(this.db.prepare("SELECT name FROM pragma_table_info('chunk_fts')").all().map((r) => r.name));
       if (cols.has("text_seg")) this.fts = true;
     } catch (error) {
-      this.log("chunk_fts unavailable:", String(error?.message ?? error));
+      this.log("chunk_fts 不可用：", String(error?.message ?? error));
       this.fts = false;
     }
   }
@@ -163,7 +163,7 @@ export class PaperStore {
     }
     const pdfjs = await this.loadPdfjs();
     if (!pdfjs) {
-      return { ok: false, code: "PDF_UNAVAILABLE", text: "", pages: 0, error: "pdfjs-dist not installed" };
+      return { ok: false, code: "PDF_UNAVAILABLE", text: "", pages: 0, error: "未安装 pdfjs-dist（解析 PDF 需要它）" };
     }
     let doc;
     try {
@@ -256,7 +256,7 @@ export class PaperStore {
         const hash = sha256(buffer);
         const existing = this.db.prepare("SELECT id, status FROM paper WHERE sha256 = ?").get(hash);
         if (existing && existing.status === "ready") {
-          result.skipped.push({ path: file, id: existing.id, reason: "duplicate" });
+          result.skipped.push({ path: file, id: existing.id, reason: "重复（同 sha256 已入库）" });
           continue;
         }
         const id = existing?.id ?? pid();
@@ -274,11 +274,12 @@ export class PaperStore {
           if (this.fts) this.db.prepare("DELETE FROM chunk_fts WHERE paper_id = ?").run(id);
           this.db.prepare("DELETE FROM chunk WHERE paper_id = ?").run(id);
         }
-        const { text, pages, error } = await this.extractText(file);
+        const { text, pages, error, code } = await this.extractText(file);
         if (error || !text.trim()) {
-          const status = error?.includes("not installed") ? "ocr_pending" : "failed";
-          this.db.prepare("UPDATE paper SET status = ?, note = ?, updated_at = ? WHERE id = ?").run(status, error ?? "empty text", now, id);
-          result.failed.push({ path: file, id, reason: error ?? "empty text" });
+          // 用 code 判定（错误文案是中英可变的，不能拿来做逻辑判断）
+          const status = code === "PDF_UNAVAILABLE" ? "ocr_pending" : "failed";
+          this.db.prepare("UPDATE paper SET status = ?, note = ?, updated_at = ? WHERE id = ?").run(status, error ?? "抽不出文本（可能是扫描版 PDF）", now, id);
+          result.failed.push({ path: file, id, reason: error ?? "抽不出文本（可能是扫描版 PDF）" });
           continue;
         }
         const pieces = this.chunkText(text);
@@ -300,7 +301,7 @@ export class PaperStore {
         this.appendManifest({ event: "add", id, sha256: hash, path: file, title: basename(file), at: Date.now() });
         result.added.push({ id, path: file, chunks: pieces.length, chars: text.length });
         result.chunks += pieces.length;
-        log("paper ready", { id, file, chunks: pieces.length });
+        log("论文就绪", { id, file, chunks: pieces.length });
       } catch (error) {
         result.failed.push({ path: file, reason: String(error?.message ?? error) });
       }
@@ -328,7 +329,7 @@ export class PaperStore {
         .prepare("SELECT chunk_id AS id, bm25(chunk_fts) AS score FROM chunk_fts WHERE chunk_fts MATCH ? ORDER BY score LIMIT ?")
         .all(expr, limit);
     } catch (error) {
-      this.log("chunk fts query failed:", String(error?.message ?? error));
+      this.log("chunk FTS 查询失败：", String(error?.message ?? error));
       return [];
     }
   }

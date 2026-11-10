@@ -26,6 +26,8 @@ dsh plugin --profile <profile> add @jinshuxuan/dsh-memory
 
 \* Vector search needs the embedding model; see [model download](docs/TROUBLESHOOTING.md#model-download-fails--offline). Without it, retrieval degrades to FTS only and everything else keeps working.
 
+In the settings panel you can **pick the memory directory with a native folder dialog and export your memory in one click** — no paths to type, no commands to remember. The panel ships in Chinese and English. See [docs/UI.md](docs/UI.md).
+
 ### Tools exposed to the model
 
 Nine tools are always available:
@@ -137,6 +139,7 @@ Removing the plugin does not touch your data. Deleting `<root>` is irreversible 
 
 ## Documentation
 
+- [docs/UI.md](docs/UI.md) — the settings panel: five tabs, three buttons, slash-command equivalents
 - [docs/INSTALL.md](docs/INSTALL.md) — three install routes, clean-profile check
 - [docs/CONFIG.md](docs/CONFIG.md) — every setting, default and blast radius
 - [docs/PRIVACY.md](docs/PRIVACY.md) — where data lands, what leaves the machine
