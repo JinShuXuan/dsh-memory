@@ -2,6 +2,12 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.1.2] - 2026-11-10
+
+### 修复
+- 设置面板同时注册到 `settings.section` 与 `sidebar.panellist` 两个槽位，任一存在即可显示（此前只挂设置页，找不到入口）。
+- 插件描述改为中文（插件列表里显示的那段）。
+
 ## [0.1.1] - 2026-11-10
 
 ### 变更

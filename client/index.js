@@ -321,11 +321,29 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       ctx.effect(() => {
         try { ctx.locale?.register?.(NS, { zh: { meta: { title: STR.zh.nav, description: "本地长期记忆" } } }); } catch { /* ignore */ }
-        return ctx.slots.inject("settings.section", () =>
-          ctx.slots.register(
-            { name: "settings.section", id: "dsh-memory", order: 30, label: () => STR.zh.nav, locale: NS },
-            Panel,
-          ));
+        const disposers = [];
+        // 同时挂两个入口：设置页分区 + 侧边栏面板。哪个存在就出现在哪，互不影响。
+        const mount = (slot) => {
+          try {
+            disposers.push(
+              ctx.slots.inject(slot, () =>
+                ctx.slots.register(
+                  { name: slot, id: "dsh-memory", order: 30, label: () => STR.zh.nav, locale: NS },
+                  Panel,
+                ),
+              ),
+            );
+          } catch (error) {
+            // 该 slot 在此版本不存在时静默跳过
+          }
+        };
+        mount("settings.section");
+        mount("sidebar.panellist");
+        return () => {
+          for (const d of disposers) {
+            try { d?.(); } catch { /* ignore */ }
+          }
+        };
       }, "dsh-memory-settings");
     }
 
