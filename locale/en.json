@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Memory",
+    "description": "Local long-term memory: SQLite FTS5 + local embedding hybrid retrieval, rule-based extraction and a relation graph; degrades to FTS-only with zero API cost."
+  }
+}

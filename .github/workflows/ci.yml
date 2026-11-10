@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # 无锁文件，故用 npm install；省略可选依赖（onnxruntime/pdfjs 原生件），绝不下载模型
+      - name: Install
+        run: npm install --omit=optional --no-audit --no-fund
+      - name: Test
+        run: npm test
+        env:
+          DSH_MEMORY_NO_DOWNLOAD: "1"
+      - name: Pack check
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        run: npm pack --dry-run

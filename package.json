@@ -1,0 +1,75 @@
+{
+  "name": "@jinshuxuan/dsh-memory",
+  "version": "0.1.0",
+  "description": "DSH local long-term memory: SQLite FTS5 + local embedding hybrid retrieval, rule-based auto-extraction, relation graph. Degrades to FTS with zero API cost.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./dsh": "./index.js",
+    "./client": "./client/index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "p1.js",
+    "papers.js",
+    "embed.js",
+    "src/",
+    "client/",
+    "locale/",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README*.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs/"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "test": "node test/regress.mjs && node test/reconcile-conflict.mjs && node test/modules.test.mjs",
+    "check": "node --check index.js && node --check p1.js && node --check papers.js && node --check embed.js && node --check src/config.js && node --check src/paths.js && node --check src/model.js && node --check src/service.js && node --check src/commands.js && node --check client/index.js",
+    "pack:check": "npm pack --dry-run"
+  },
+  "keywords": [
+    "dsh",
+    "cordis",
+    "memory",
+    "agent-memory",
+    "rag",
+    "sqlite",
+    "fts5",
+    "embedding"
+  ],
+  "author": "JinShuXuan",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JinShuXuan/dsh-memory.git"
+  },
+  "homepage": "https://github.com/JinShuXuan/dsh-memory#readme",
+  "bugs": {
+    "url": "https://github.com/JinShuXuan/dsh-memory/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": ["@deepseek-ai/dsh-client-ui-slots", "@deepseek-ai/dsh-client-locale"],
+      "platform": "web"
+    }
+  },
+  "optionalDependencies": {
+    "@huggingface/tokenizers": "0.0.4",
+    "onnxruntime-node": "1.30.0",
+    "pdfjs-dist": "^6.5.438"
+  }
+}

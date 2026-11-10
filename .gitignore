@@ -1,0 +1,14 @@
+node_modules/
+.dsh-memory/
+models/
+*.db
+*.db-wal
+*.db-shm
+*.bak-*
+tmp/
+.env
+.context-budget/
+*.tgz
+npm-debug.log*
+.DS_Store
+Thumbs.db
