@@ -49,19 +49,24 @@ If your DSH build ships the bundle installer tool (`install_bundle`), you can ha
 
 ## Optional dependencies
 
-Three dependencies are optional, so a bare install still works:
+Two dependencies are optional, so a bare install still works, and no build script runs during install:
 
 | Package | Used for | Without it |
 |---|---|---|
-| `onnxruntime-node` | local embeddings | vector search off — FTS-only retrieval |
-| `@huggingface/tokenizers` | tokenizer for the embedding model | same as above |
+| `@huggingface/tokenizers` | tokenizer for the embedding model | vector search off — FTS-only retrieval |
 | `pdfjs-dist` | `paper` ingest of PDFs | PDF ingest unavailable; Markdown/TXT still work |
 
 If you installed with `--no-optional` (common offline or in a locked-down registry), expect exactly those degradations. `memory_health` will show the vector model as unavailable; everything else keeps working.
 
 **Zero hard dependencies.** Nothing native is required: without the optional packages the plugin stays fully usable in FTS-only mode. Set `DSH_MEMORY_NO_DOWNLOAD=1` to skip the embedding-model download entirely (air-gapped or metered networks).
 
-> **pnpm may refuse the optional native build.** `onnxruntime-node` ships a postinstall script; under `strictDepBuilds` (pnpm 10+) `dsh plugin add` can exit 1 with `ERR_PNPM_IGNORED_BUILDS`. The install itself succeeded — either approve it once (`pnpm approve-builds` / `--allow-build=onnxruntime-node`) or accept FTS-only retrieval.
+> **Vector search is opt-in.** `onnxruntime-node` ships a postinstall script, which pnpm's `strictDepBuilds` (pnpm 10+) refuses to run unless approved — that would make `dsh plugin add` exit 1 and the plugin never get mounted. So the package does not depend on it. To enable local embeddings, install it into the profile yourself and approve the build when prompted:
+>
+> ```bash
+> dsh plugin --profile <profile> add onnxruntime-node@1.30.0
+> ```
+>
+> or re-run the plugin install with `--allow-build=onnxruntime-node`. Without it, retrieval stays FTS-only — everything else is unaffected.
 
 ---
 

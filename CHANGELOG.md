@@ -7,13 +7,14 @@
 ### 修复
 - **发布即崩**：`index.js` 从 `./p1.js` 导入，但 `package.json` 的 `files` 未包含 `p1.js`，装完启动 `ERR_MODULE_NOT_FOUND`；已补入白名单。
 - **默认数据根不一致**：`skill-drafts.js` / `error-ledger.js` 硬编码 `D:dsh-memory`，与 `resolveRoot()` 的 `~/.dsh-memory` 冲突；统一走 `resolveRoot()`。
+- **安装被 pnpm 拦成 exit 1**：`optionalDependencies` 里的 `onnxruntime-node` 带 postinstall，pnpm `strictDepBuilds` 拒绝执行 → `dsh plugin add` 失败 → 插件装上了却永不挂载。已移出依赖（`embed.js` 本就是动态 import + 失败降级），向量检索改为按需自装。
 - 旧库探测 `legacyRoots()` 不再猜盘符，只在显式设置 `DSH_MEMORY_LEGACY_ROOT` 时启用。
 - 测试夹具与注释去个人化（姓名、学校、本机路径），全仓不再出现作者机器路径。
 
 ### 新增
 - `test/fresh-install.mjs`：空数据根 → 首次启动建库 → 写入 → 检索 → 重开仍可检索。
 - `.gitattributes`：统一 LF，避免 Windows 检出时行尾漂移。
-- 文档：零硬依赖说明、`DSH_MEMORY_NO_DOWNLOAD=1` 离线开关、pnpm `ERR_PNPM_IGNORED_BUILDS` 处置。
+- 文档：零硬依赖说明、`DSH_MEMORY_NO_DOWNLOAD=1` 离线开关、pnpm `ERR_PNPM_IGNORED_BUILDS` 处置；向量检索改为按需安装 `onnxruntime-node`。
 
 ## [0.3.0] - 2026-11-11
 

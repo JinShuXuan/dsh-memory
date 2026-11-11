@@ -76,7 +76,6 @@
   },
   "optionalDependencies": {
     "@huggingface/tokenizers": "0.0.4",
-    "onnxruntime-node": "1.30.0",
     "pdfjs-dist": "^6.5.438"
   }
 }
