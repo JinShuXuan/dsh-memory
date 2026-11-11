@@ -67,7 +67,7 @@ dsh plugin --profile <profile> add @jinshuxuan/dsh-memory
    dsh plugin --profile <profile> add @jinshuxuan/dsh-memory
    ```
 
-2. **重启 DSH。** 首次启动会自建 `~/.dsh-memory`，后台下载向量模型。
+2. **重启 DSH。** 首次启动会自建 `~/.dsh-memory`，后台下载向量模型（零硬依赖；设 `DSH_MEMORY_NO_DOWNLOAD=1` 可跳过下载，退化为纯 FTS 检索）。
 
 3. **验一下。** 让 agent「记住我用的是 Neovim」，再问「我用的编辑器是什么」；或直接调 `memory_health` 自检。
 

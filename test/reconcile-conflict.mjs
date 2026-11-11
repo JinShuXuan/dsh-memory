@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strict as A } from "node:assert";
 
-const LOG_FILE = process.env.DSH_MEMORY_ROOT ? join(process.env.DSH_MEMORY_ROOT, "memory.log") : "D:\\\\dsh-memory\\\\memory.log";
+const LOG_FILE = join(process.env.DSH_MEMORY_ROOT || join(tmpdir(), "dshmem-reconcile"), "memory.log");
 
 function orphanMd(dir, { id, subject, predicate, value }) {
   const facts = join(dir, "global", "facts");

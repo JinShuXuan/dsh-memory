@@ -18,8 +18,9 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { resolveRoot } from "./src/paths.js";
 
-const DEFAULT_ROOT = process.env.DSH_MEMORY_ROOT || "~/.dsh-memory";
+const DEFAULT_ROOT = resolveRoot();
 const SUBDIR = ["global", "skills-drafts"];
 const STALE_DAYS = 180;
 const ACTIVE_AT = 3;
@@ -407,7 +408,7 @@ function textOutput() {
  *   register(def)        首选，复用 index.js 里 try/catch 的 register 包装
  *   tools                兜底：{ register }
  *   log(fn)              可选
- *   root                 记忆库根目录（默认 DSH_MEMORY_ROOT || ~/.dsh-memory）
+ *   root                 记忆库根目录（默认 resolveRoot()）
  *   listFacts({subject}) 可选，返回事实数组；不提供时 memory_skill_suggest 回 NO_FACT_SOURCE
  */
 export function registerSkillDrafts(api = {}) {

@@ -12,15 +12,16 @@
 //   log       optional  (...args) => void
 //   store     optional  MemoryStore 实例（writeback 用 insertRow + writeMarkdown）
 //   addFact   optional  async (input) => {ok,id,code,message}：memory_store 同款写入口，优先使用
-//   dataDir   optional  默认 DSH_MEMORY_ROOT || "~/.dsh-memory"
+//   dataDir   optional  默认 resolveRoot()（DSH_MEMORY_ROOT 或 ~/.dsh-memory）
 //   factsDir  optional  默认 <dataDir>/global/facts
 //   errorSubject optional 写回事实的 subject，默认 "dsh"
 
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { resolveRoot } from "./src/paths.js";
 
-const DEFAULT_ROOT = process.env.DSH_MEMORY_ROOT || "~/.dsh-memory";
+const DEFAULT_ROOT = resolveRoot();
 const TEXT_OUTPUT = { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: String(v) }] };
 const COLS = ["cmd", "symptom", "lesson", "root_cause", "where_solution"];
 
@@ -175,6 +176,19 @@ export function createErrorLedger(api = {}) {
     const rootCause = clip(sanitize(root_cause), 300);
     const les = clip(sanitize(lesson), 300);
     const where = clip(sanitize(where_solution), 300);
+    // 最小自动触发：把写入结果交给 onReport（tool-glue 里接「同签名 hits>=2 → 起草 skill」）
+    const notify = async (result) => {
+      try {
+        if (typeof api.onReport === "function") {
+          await api.onReport(result, { cmd: command, symptom: sym, root_cause: rootCause, lesson: les, where_solution: where });
+        }
+      } catch (error) {
+        try {
+          api.log?.("onReport:", String(error?.message ?? error));
+        } catch {}
+      }
+      return result;
+    };
     const sig = signatureOf(command, rootCause);
     const row = db.prepare("SELECT id, hits FROM error_ledger WHERE signature = ?").get(sig);
     if (row) {
@@ -185,7 +199,7 @@ export function createErrorLedger(api = {}) {
          WHERE id = ?`,
       ).run(nowIso(), les, les, where, where, row.id);
       const hits = Number(row.hits ?? 0) + 1;
-      return { ok: true, deduped: true, id: Number(row.id), signature: sig, hits };
+      return notify({ ok: true, deduped: true, id: Number(row.id), signature: sig, hits });
     }
     const info = db
       .prepare(
@@ -193,7 +207,7 @@ export function createErrorLedger(api = {}) {
          VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?)`,
       )
       .run(sig, nowIso(), command, sym, rootCause, les, where, nowIso());
-    return { ok: true, deduped: false, id: Number(info.lastInsertRowid), signature: sig, hits: 1 };
+    return notify({ ok: true, deduped: false, id: Number(info.lastInsertRowid), signature: sig, hits: 1 });
   };
 
   /** 检索：LIKE 多字段打分（中文按子串，无需分词表），每条 ≤200 字符 */

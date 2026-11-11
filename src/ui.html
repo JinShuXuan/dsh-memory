@@ -26,6 +26,9 @@
   button:hover { border-color: #38bdf8; }
   .muted { opacity: .6; font-size: 12px; }
   .err { color: #ff6b6b; }
+  .banner { padding: 9px 18px; background: #2b2113; border-bottom: 1px solid #4c3a1a; color: #ffd28a; font-size: 12.5px; line-height: 1.55; }
+  .banner b { color: #ffb84d; }
+  .banner a { color: #ffd28a; }
   pre { white-space: pre-wrap; font-size: 12px; opacity: .85; }
   .item { padding: 8px 0; border-bottom: 1px solid #1c2436; }
   .item .meta { font-size: 12px; opacity: .55; }
@@ -35,10 +38,14 @@
 </head>
 <body>
 <header><h1>记忆库</h1><span class="muted" id="root"></span></header>
+<div class="banner" role="note">
+  <b>本页为兜底演示页。</b>独立地址不带 DSH 登录态，通常返回 401；请从 <b>DSH 界面 → 设置 → 记忆库</b> 打开。
+  接口诊断看 <a id="diagLink" href="/api/dsh-memory/diag" target="_blank" rel="noreferrer">/diag</a>。
+</div>
 <nav id="nav"></nav>
 <main id="main">加载中…</main>
 <script>
-const API_BASES = ["/api/jinshuxuan/dsh-memory", "/api/@jinshuxuan/dsh-memory", "/memory-api"];
+const API_BASES = ["/api/dsh-memory"];
 let API = API_BASES[0];
 let API_PICKED = false;
 async function pickBase() {
@@ -64,7 +71,7 @@ async function api(path, method = "GET", body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.message || ("HTTP " + res.status));
+  if (!res.ok) throw new Error((json.message || "请求失败") + "（HTTP " + res.status + " · " + API + "）");
   return json.data;
 }
 const TABS = [["config", "配置"], ["overview", "概览"], ["browse", "浏览"], ["review", "审批"], ["maintenance", "维护"]];
@@ -74,7 +81,7 @@ function renderNav() {
   for (const [k, label] of TABS) nav.append(h("button", { class: k === tab ? "on" : "", onclick: () => { tab = k; render(); } }, label));
 }
 async function render() {
-  if (!API_PICKED) { await pickBase(); API_PICKED = true; }
+  if (!API_PICKED) { await pickBase(); API_PICKED = true; $("#diagLink").href = API + "/diag"; }
   renderNav();
   const main = $("#main"); main.innerHTML = "";
   main.append(h("div", { class: "muted" }, "加载中…"));
@@ -85,7 +92,13 @@ async function render() {
     else if (tab === "review") await renderReview(main);
     else renderMaintenance(main);
   } catch (e) {
-    main.innerHTML = ""; main.append(h("div", { class: "err" }, "加载失败：" + (e.message || e)));
+    main.innerHTML = "";
+    main.append(
+      h("div", { class: "err" }, "加载失败：" + (e.message || e)),
+      h("div", { class: "muted", style: "margin-top:8px" }, "当前 API 前缀：" + API),
+      h("div", { class: "muted" }, "如果这里是 401：独立地址没有登录态，请从 DSH 界面 → 设置 → 记忆库 打开；如果是 404：host 未挂载该插件路由，检查插件是否启用。"),
+      h("a", { class: "muted", href: API + "/diag", target: "_blank", rel: "noreferrer" }, "打开 /diag 诊断"),
+    );
   }
 }
 async function renderOverview(main) {
@@ -148,7 +161,12 @@ async function renderConfig(main) {
     h("button", { onclick: async () => {
       status.textContent = "保存中…";
       try {
-        const patch = {}; for (const f of d.schema) { const p = f.key.split("."); let c = patch; for (let i = 0; i < p.length - 1; i++) c = c[p[i]] ??= {}; c[p.at(-1)] = get(f.key); }
+        const patch = {}; for (const f of d.schema) {
+          const v = get(f.key);
+          // 掩码占位符（sk-…abcd / ***）不是新值：不回传，避免覆盖服务器上的真 key
+          if (typeof v === "string" && /key|token|secret|password/i.test(f.key) && /…|\*\*\*|••/.test(v)) continue;
+          const p = f.key.split("."); let c = patch; for (let i = 0; i < p.length - 1; i++) c = c[p[i]] ??= {}; c[p.at(-1)] = v;
+        }
         const r = await api("/config", "POST", patch);
         status.textContent = "已保存" + (r.restartRequired ? " · 路径改动需重启 DSH" : "");
       } catch (e) { status.textContent = "保存失败：" + e.message; }

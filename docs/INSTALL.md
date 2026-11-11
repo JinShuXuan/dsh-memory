@@ -59,6 +59,10 @@ Three dependencies are optional, so a bare install still works:
 
 If you installed with `--no-optional` (common offline or in a locked-down registry), expect exactly those degradations. `memory_health` will show the vector model as unavailable; everything else keeps working.
 
+**Zero hard dependencies.** Nothing native is required: without the optional packages the plugin stays fully usable in FTS-only mode. Set `DSH_MEMORY_NO_DOWNLOAD=1` to skip the embedding-model download entirely (air-gapped or metered networks).
+
+> **pnpm may refuse the optional native build.** `onnxruntime-node` ships a postinstall script; under `strictDepBuilds` (pnpm 10+) `dsh plugin add` can exit 1 with `ERR_PNPM_IGNORED_BUILDS`. The install itself succeeded — either approve it once (`pnpm approve-builds` / `--allow-build=onnxruntime-node`) or accept FTS-only retrieval.
+
 ---
 
 ## Restart and first start

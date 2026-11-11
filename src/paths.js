@@ -2,10 +2,7 @@
 // 目标：源码里不出现任何盘符字面量，跨平台默认落在 ~/.dsh-memory。
 import { existsSync, mkdirSync, copyFileSync, cpSync, statSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
-
-/** 旧版 Windows 默认目录（盘符用拼接，避免源码出现字面量）。 */
-const LEGACY_ROOT = "D:" + sep + "dsh-memory";
+import { join, resolve } from "node:path";
 
 export function resolveRoot({ env = process.env, home = homedir(), override } = {}) {
   const fromEnv = env && env.DSH_MEMORY_ROOT ? String(env.DSH_MEMORY_ROOT).trim() : "";
@@ -18,13 +15,16 @@ export function modelDir(root) {
   return join(root, "models", "Xenova", "bge-small-zh-v1.5");
 }
 
-/** 仅 Windows 且旧目录真实存在时返回；current 传当前 root 以免自己检测自己。 */
+/** 旧版数据目录：仅在显式设置 DSH_MEMORY_LEGACY_ROOT 时探测，不猜作者机器上的路径。
+ *  current 传当前 root，避免把自己检测成旧库。 */
 export function legacyRoots(current) {
-  if (process.platform !== "win32") return [];
+  const fromEnv = process.env.DSH_MEMORY_LEGACY_ROOT ? String(process.env.DSH_MEMORY_LEGACY_ROOT).trim() : "";
+  if (!fromEnv) return [];
   try {
-    if (!existsSync(LEGACY_ROOT)) return [];
-    if (current && resolve(current) === resolve(LEGACY_ROOT)) return [];
-    return [LEGACY_ROOT];
+    const root = resolve(fromEnv);
+    if (!existsSync(root)) return [];
+    if (current && resolve(current) === root) return [];
+    return [root];
   } catch {
     return [];
   }
@@ -106,5 +106,3 @@ export async function verifyMigration(root, legacyRoot) {
     return { ok: false, error: String(error?.message ?? error) };
   }
 }
-
-export const LEGACY_ROOT_PATH = LEGACY_ROOT;

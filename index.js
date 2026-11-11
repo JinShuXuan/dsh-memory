@@ -69,7 +69,7 @@ const _LEGACY_DEFAULTS = {
   gate: "assist", // off | shadow | assist（enforce 已并入 assist，保留旧值兼容）
   hits: 6,
   hitsChars: 800,
-  rulesChars: 800,
+  rulesChars: 880,
   sessionInjects: 6,
   // 2026-11-10：注入额度改为滑动窗口（最近 N 个 turn 累计），0 = 旧行为（整会话终身）
   sessionInjectWindow: 40,
@@ -2682,7 +2682,7 @@ class MemoryStore {
   lexicalTop(qTokens, scope, limit, phrase) {
     if (qTokens.length === 0) return [];
     let match = qTokens.map((t) => `"${t}"`).join(" OR ");
-    // 2026-11-11：短整句额外作为一个短语 OR 进来（"农历三月初三" 这类连续命中排更前）。
+    // 2026-11-11：短整句额外作为一个短语 OR 进来（多字连续短语命中排更前）。
     // 含引号/太长/与词项串相同就跳过；短语哪怕语法不合法也只是整句失败 → catch 后返回 []，
     // 所以这里再兜一层：短语子句失败时用纯词项重试一次。
     const ph = String(phrase ?? "").replace(/["']/g, " ").trim();
@@ -3061,6 +3061,7 @@ function refreshCard(store, config) {
   lines.push(
     "- 可用工具：memory_store 存、memory_search 查事实、memory_get 取原文、memory_recall 回查历史原话、memory_link 关联、memory_admin 删/置顶/恢复/待审、memory_health 自检与维护、memory_abstract 归纳、paper 论文库。问「上次/之前聊过什么」先 memory_recall；需要原文先 memory_search。",
   );
+  lines.push("- 工具失败且可归因（坏路径/坏 API/环境）→ 收尾用 memory_error report 记一条；同坑再现先 memory_error search。");
   lines.push(`- 库画像：active ${store.activeCount()} 条；检索：${store.fts ? "FTS5-BM25" : "JS 退化"}。`);
   const pins = store.pinned(12);
   if (pins.length > 0) {
@@ -4483,7 +4484,7 @@ async function attachOptionalModules(ctx, config) {
 export function apply(ctx) {
   try {
     const legacy = legacyRoots(ROOT);
-    if (legacy.length) log("检测到旧数据目录：", legacy[0], "— 可用 DSH_MEMORY_ROOT 指定新目录，或运行 migrateLegacy() 迁移");
+    if (legacy.length) log("检测到旧数据目录：", legacy[0], "— 可用 DSH_MEMORY_ROOT 指定新目录；旧路径请设 DSH_MEMORY_LEGACY_ROOT 后运行 migrateLegacy() 迁移");
   } catch {
     /* ignore */
   }

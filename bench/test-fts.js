@@ -1,7 +1,7 @@
 /**
  * bench/test-fts.js — 索引地基回归：FTS 双列 / 短语召回 / fusion 排序 / indexStats / subject 归一
  * 跑法：node bench/test-fts.js
- * 全程用临时目录（<repo>/.tmp-test/<ts>/），process.env.DSH_MEMORY_ROOT 指向它，绝不碰真实 ~/.dsh-memory。
+ * 全程用临时目录（<repo>/.tmp-test/<ts>/），process.env.DSH_MEMORY_ROOT 指向它，绝不碰真实数据目录。
  */
 import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -64,8 +64,8 @@ function openStore(name) {
 }
 
 const SAMPLES = [
-  ["记忆插件的日志在 ~/.dsh-memory\\memory.log", "dsh", "logs_in"],
-  ["Alice在示例大学读大一", "user", "studies_at"],
+  ["记忆插件的日志写在 memory.log 里", "dsh", "logs_in"],
+  ["Alice在示例大学物理学院读大一", "user", "studies_at"],
   ["农历三月初三是Alice的生日", "user", "born_on"],
   ["DSH 的配置文件放在 config.json 里", "dsh", "config_at"],
   ["sqlite 的 FTS5 支持中文短语匹配", "dsh", "uses_fts"],

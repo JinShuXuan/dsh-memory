@@ -1,6 +1,6 @@
 {
   "name": "@jinshuxuan/dsh-memory",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "DSH 本地长期记忆：SQLite 全文检索 + 本地向量混合召回、规则自动抽取、关系图；模型缺失自动退化纯 FTS，零 API 花费。",
   "type": "module",
   "main": "./index.js",
@@ -13,25 +13,28 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "index.js",
+    "p1.js",
+    "embed.js",
+    "papers.js",
+    "skill-drafts.js",
+    "error-ledger.js",
+    "tool-glue.js",
+    "client/",
+    "src/",
+    "locale/",
+    "docs/",
+    "icon.svg",
+    "cordis.patch.yml",
     "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md",
-    "README*.md"
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=22.5"
   },
   "scripts": {
-    "test": "node test/regress.mjs && node test/reconcile-conflict.mjs && node test/modules.test.mjs",
+    "test": "node test/regress.mjs && node test/reconcile-conflict.mjs && node test/modules.test.mjs && node test/auto-draft.mjs && node test/client-smoke.mjs && node test/routes-smoke.mjs",
     "check": "node --check index.js && node --check p1.js && node --check papers.js && node --check embed.js && node --check src/config.js && node --check src/paths.js && node --check src/model.js && node --check src/service.js && node --check src/commands.js && node --check client/index.js",
     "pack:check": "npm pack --dry-run"
   },

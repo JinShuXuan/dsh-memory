@@ -65,7 +65,7 @@ The `gate` setting controls this: `off` (silent), `shadow` (retrieve and log, ne
    dsh plugin --profile <profile> add @jinshuxuan/dsh-memory
    ```
 
-2. **Restart DSH.** The plugin creates `~/.dsh-memory` on first start and downloads the embedding model in the background.
+2. **Restart DSH.** The plugin creates `~/.dsh-memory` on first start and downloads the embedding model in the background (no hard native dependency; set `DSH_MEMORY_NO_DOWNLOAD=1` to skip the download and stay FTS-only).
 
 3. **Check it.** Ask the agent to *"remember that my editor is Neovim"*, then ask *"what is my editor?"* — or call `memory_health` for a self-check.
 

@@ -1,5 +1,5 @@
 /**
- * bench/test-skills.js — skill-drafts.js 的独立回归（临时目录，不碰真实 ~/.dsh-memory）
+ * bench/test-skills.js — skill-drafts.js 的独立回归（临时目录，不碰真实数据目录）
  * 跑法：node bench/test-skills.js
  */
 import assert from "node:assert/strict";

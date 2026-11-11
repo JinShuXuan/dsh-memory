@@ -6,7 +6,10 @@
  * 只有 action 必填）；原 def 自己的 required/上限仍在各 def 内部生效。
  */
 import registerSkillDrafts from "./skill-drafts.js";
+import { upsertDraft } from "./skill-drafts.js";
 import registerErrorLedger from "./error-ledger.js";
+
+const oneLine = (value, max = 120) => String(value ?? "").replace(/\\s+/g, " ").trim().slice(0, max);
 
 const TEXT_OUTPUT = { schema: { type: "string" }, render: (_a, v) => [{ type: "text", text: String(v) }] };
 
@@ -120,6 +123,30 @@ export async function mergeMemoryTools(api = {}) {
       log,
       dataDir: api.root,
       factsDir: api.factsDir,
+      // 最小自动触发：同一签名第 2 次复现时起草 skill（幂等：同 title 更新同一份草稿）
+      onReport: async (result, fields) => {
+        const hits = Number(result?.hits ?? 0);
+        if (!result?.ok || hits < 2) return;
+        const steps = [
+          `现象：${oneLine(fields.symptom)}`,
+          `根因：${oneLine(fields.root_cause)}`,
+          `做法：${oneLine(fields.lesson)}`,
+        ].filter((s) => s.slice(s.indexOf("：") + 1).trim().length > 4);
+        if (steps.length < 3) return;
+        try {
+          const out = upsertDraft({
+            root: api.root,
+            title: `台账教训：${oneLine(fields.cmd || fields.symptom, 28)}（${String(result.signature).slice(0, 6)}）`,
+            description: `错误台账 ${result.signature} 第 ${hits} 次复现`,
+            steps,
+            pitfalls: oneLine(fields.where_solution, 200),
+            evidence: `error#${result.id}`,
+          });
+          log("auto-draft:", out?.created ? "created" : "updated", out?.file || out?.name || "");
+        } catch (error) {
+          log("auto-draft failed:", String(error?.message ?? error));
+        }
+      },
     });
   } catch (error) {
     log("tool-glue error-ledger:", String(error?.message ?? error));
